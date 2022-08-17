@@ -253,3 +253,4 @@ for obj in brd.search(brd.lists, 'name', 'PEDIDOS', 'id', 'name'):
 # for lst in brd.children:
 #     lst: List
 #     print(lst.to_tuple('name', 'id'))
+#
