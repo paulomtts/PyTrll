@@ -46,6 +46,16 @@ import json
 import os
 
 
+def extract(look_in: list, *keys: str):
+    """Extract data from a list of JSONs and return it as a generator containing namedTuples."""
+    Object = namedtuple(extract.__name__, [*keys])
+    return ((Object(*[json.get(key, None) for key in keys]) for json in look_in))
+
+def search(look_in: list, look_by: str, look_for: str, *keys: str):
+    """Conditionally extract data from a list of JSONs and return it as a generator containing namedTuples."""
+    Object = namedtuple(search.__name__, [*keys])
+    return (Object(*[json.get(key, None) for key in keys]) for json in look_in if json[look_by] == look_for)
+
 class TrelloAPIError(Exception):
     """The Trello exception class."""
 
@@ -112,40 +122,19 @@ class TrelloBaseObject(ABC):
             raise TrelloAPIError(response)
         return response
 
-    # METHODS ##############################################################
-    def extract(self, json_list: list, *keys: str):
-        """Extract data from a list of JSONs and return it as a generator containing namedTuples."""
-        Object = namedtuple(self.extract.__name__, [*keys])
-        return ((Object(*[json.get(key, None) for key in keys]) for json in json_list))
-    
-    def search(self, json_list: list, look_by: str, look_for: str, *keys: str):
-        """Conditionally extract data from a list of JSONs and return it as a generator containing namedTuples."""
-        Object = namedtuple(self.search.__name__, [*keys])
-        return (Object(*[json.get(key, None) for key in keys]) for json in json_list if json[look_by] == look_for)
+    def _add_child(self, json: dict):
+        """Instantiate a child object, fill it with a JSON and add it to this object's children."""
+        switch = {'Board': List, 'List':  Card, 'Card': Checklist}
+        class_ = switch.get(self.__class__.__name__, None)
+        
+        child = class_(json['id'])
+        child.__json = json
+        
+        self.children.append(child)
 
-    def to_tuple(self, *keys):
-        """Get specific data from this object's JSON and return it as a namedTuple."""
-        Object = namedtuple(self.__class__.__name__.lower(), [*keys])
-        return Object(*[self.json.get(key, None) for key in keys])
+    # METHODS ##############################################################
 
     # SCRIPT METHODS #######################################################
-    def populate(self):
-        """Populate this object with instances of it's children objects. i.e.: boards > lists"""
-        switch = {'boards': ('lists', List), 'lists': ('cards', Card), 'cards': ('checklists', Checklist)}
-        var_name = '_' + self.__class__.__name__ + '__' + switch[self.__prefix][0]
-        get_children_jsons = getattr(self, 'set_' + switch[self.__prefix][0])
-        class_ref = switch[self.__prefix][1]
-
-        get_children_jsons()
-        for json in self.__dict__[var_name]:
-            new_Object = class_ref(json['id'])
-            new_Object.__json = json
-            self.children.append(new_Object) 
-    
-    def setup(self):
-        """Acquire this object's json, acquire it's direct children JSON and instantiate them."""
-        self.get_self()
-        self.populate()
 
     # REQUESTS #############################################################
     def get_self(self):
@@ -180,23 +169,53 @@ class Board(TrelloBaseObject):
     def checklists(self):
         return self.__checklists
     
-    # REQUESTS #############################################################
-    def set_cards(self):
-        """Acquire Cards from a board or list in Trello."""
-        response = self._request('GET', self.id, 'cards')
-        self.__cards = response.json()
-        return response
+    # METHODS ##############################################################
+    def populate(self):
+        """Populate this object with instances of it's children objects. i.e.: boards > lists"""
+        self.get_lists()
+        self.get_cards()
+        self.get_checklists()
 
-    def set_lists(self):
+        for lst in self.lists:
+            self._add_child(json)
+
+        for child, json in zip(self.children, self.lists):
+            child: List
+            child._add_child(json)
+
+        
+        # Board:
+        #   set_lists
+        #   set_cards
+        #   set_checklists
+
+        # List:
+        #   set_cards
+
+        # Card:
+        #   set_checklists
+        #   set_checkitems
+
+        # Checklist:
+        #   set_checkitems
+
+    # REQUESTS #############################################################
+    def get_lists(self):
         """Acquire Lists from a board.."""
         response = self._request('GET', self.id, 'lists')
-        self.__lists = response.json()
+        self.__lists = [List(json['id']) for json in response.json()]
         return response
     
-    def set_checklists(self):
+    def get_cards(self):
+        """Acquire Cards from a board or list in Trello."""
+        response = self._request('GET', self.id, 'cards')
+        self.__cards = [Card(json['id']) for json in response.json()]
+        return response
+
+    def get_checklists(self):
         """Acquire Checklists from a board.."""
         response = self._request('GET', self.id, 'checklists')
-        self.__checklists = response.json()
+        self.__checklists = [Checklist(json['id']) for json in response.json()]
         return response
 
 class List(TrelloBaseObject):
@@ -237,20 +256,18 @@ brd = Board('62221524f3b7441300da7a88')
 
 # brd.get_self()
 # brd.populate()
-brd.setup()
 
 print(brd['name'], brd['id'])
-
-for obj in brd.extract(brd.lists, 'id', 'name', 'idBoard'):
-    print(obj)
 
 for obj in brd.lists:
     print(obj['id'], obj['name'])
 
-for obj in brd.search(brd.lists, 'name', 'PEDIDOS', 'id', 'name'):
+for obj in brd.children:
+    obj: List
+    print(obj.to_tuple('name', 'id'))
+
+for obj in extract(brd.lists, 'id', 'name', 'idBoard'):
     print(obj)
 
-# for lst in brd.children:
-#     lst: List
-#     print(lst.to_tuple('name', 'id'))
-#
+for obj in search(brd.lists, 'name', 'PEDIDOS', 'id', 'name'):
+    print(obj)
