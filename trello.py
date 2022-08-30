@@ -40,21 +40,14 @@
 
 from abc import ABC, abstractmethod
 from collections import namedtuple
+from pydantic import BaseModel
 
 import requests as rq
+import itertools
 import json
 import os
 
 
-def extract(look_in: list, *keys: str):
-    """Extract data from a list of JSONs and return it as a generator containing namedTuples."""
-    Object = namedtuple(extract.__name__, [*keys])
-    return ((Object(*[json.get(key, None) for key in keys]) for json in look_in))
-
-def search(look_in: list, look_by: str, look_for: str, *keys: str):
-    """Conditionally extract data from a list of JSONs and return it as a generator containing namedTuples."""
-    Object = namedtuple(search.__name__, [*keys])
-    return (Object(*[json.get(key, None) for key in keys]) for json in look_in if json[look_by] == look_for)
 
 class TrelloAPIError(Exception):
     """The Trello exception class."""
@@ -79,20 +72,87 @@ class TrelloAPIError(Exception):
 
 class TrelloBaseObject(ABC):
     """A generic blueprint Trello objects."""
-
     @abstractmethod
     def __init__(self, id: str, prefix: str):        
         self.__id           :str      =id
         self.__json         :json     =None
-        self.__children     :list     =[]
         self.__prefix       :str      =prefix
 
         self.__key          :str      =os.environ['trello_key']
         self.__token        :str      =os.environ['trello_token']
         
 
-    def __getitem__(self, key: str):
-        return self.__json.get(key, None)
+    def __getitem__(self, *tup: str):
+        """Contains search mechanisms."""
+
+        # Single arguments ##############
+        if not isinstance(tup[0], tuple):
+            
+            arg = tup[0]
+            if not isinstance(arg, (list, str)):
+                raise TypeError(f"Single arguments can only be {str.__class__} or {list.__class__}.")
+
+            # [str] -> str
+            if isinstance(arg, str):
+                return self.json[arg]
+
+            # [list] -> list[json, ...]
+            elif isinstance(arg, list) and all(isinstance(key, (Board, List, Card)) for key in arg[1:]):
+                return [obj.json for obj in arg]
+        
+        # Multiple arguments ############
+        else:
+            
+            if all(isinstance(el, str) for el in tup[0]):
+                return json.dumps({key: self.json[key] for key in tup[0]})
+
+            container: list = tup[0][0]
+            if not isinstance(container, (list, dict, json)):
+                raise TypeError(f"Expected {list.__class__} for CONTAINER, but got {container.__class__}")
+            if isinstance(container, list) and not all(isinstance(cont, (List, Card, Checklist)) for cont in container):
+                raise TypeError(f"All ITEMS in a container must be of type {List.__class__}, {Card.__class__} or {Checklist.__class__}.")            
+            
+            
+            match_dict: dict = tup[0][1]
+            if isinstance(match_dict, dict):
+                pos = 2
+                if not all(isinstance(k, str) for k in match_dict.keys()):
+                    raise TypeError(f"All MATCH KEYS must be of type {str.__class__}.")
+                if not all(isinstance(k, list) for k in match_dict.values()):
+                    raise TypeError(f"All MATCH VALUES must be of type {list.__class__}.")
+                values = []
+                for lst in itertools.chain(match_dict.values()):
+                    values.extend(lst)
+                if not all(isinstance(k, str) for k in values):
+                    raise TypeError(f"All ELEMENTS in a match's list of values must be of type {str.__class__}.")
+            else:    
+                pos = 1
+                match_dict = {}
+            
+
+            keys: list = [el for el in tup[0][pos:]]
+            if not all(isinstance(k, str) for k in keys):
+                raise TypeError(f'All KEYS must be of type {str.__class__}.')
+
+
+            # See if an object's json fits all the criteria
+            def _fit(object, matches: dict):
+                for key, val_lst in matches.items():
+                    if object.json[key] not in val_lst:
+                        return False
+                return object.json
+
+            # Perform searches, if any
+            if match_dict != {}:
+                matches = []
+                for object in container:
+                    matches.append(_fit(object, match_dict))
+                
+                container = list(filter(None, matches))
+
+            if keys != []:
+                return [{k:object[k] for k in keys} for object in container]
+            return container
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}({self.__id!r})'
@@ -101,10 +161,6 @@ class TrelloBaseObject(ABC):
     @property
     def json(self):
         return self.__json
-    
-    @property
-    def children(self):
-        return self.__children
 
     @property
     def id(self):
@@ -122,19 +178,10 @@ class TrelloBaseObject(ABC):
             raise TrelloAPIError(response)
         return response
 
-    def _add_child(self, json: dict):
-        """Instantiate a child object, fill it with a JSON and add it to this object's children."""
-        switch = {'Board': List, 'List':  Card, 'Card': Checklist}
-        class_ = switch.get(self.__class__.__name__, None)
-        
-        child = class_(json['id'])
-        child.__json = json
-        
-        self.children.append(child)
-
-    # METHODS ##############################################################
-
     # SCRIPT METHODS #######################################################
+    def get_children(self):
+        """Get children entities from Trello and instantiate them as objects."""
+        pass
 
     # REQUESTS #############################################################
     def get_self(self):
@@ -148,6 +195,7 @@ class TrelloBaseObject(ABC):
         response = self._request('PUT', self.id, query=query)
         self.__json = response.json()
         return response
+
 
 class Board(TrelloBaseObject):
     def __init__(self, id: str):
@@ -169,36 +217,6 @@ class Board(TrelloBaseObject):
     def checklists(self):
         return self.__checklists
     
-    # METHODS ##############################################################
-    def populate(self):
-        """Populate this object with instances of it's children objects. i.e.: boards > lists"""
-        self.get_lists()
-        self.get_cards()
-        self.get_checklists()
-
-        for lst in self.lists:
-            self._add_child(json)
-
-        for child, json in zip(self.children, self.lists):
-            child: List
-            child._add_child(json)
-
-        
-        # Board:
-        #   set_lists
-        #   set_cards
-        #   set_checklists
-
-        # List:
-        #   set_cards
-
-        # Card:
-        #   set_checklists
-        #   set_checkitems
-
-        # Checklist:
-        #   set_checkitems
-
     # REQUESTS #############################################################
     def get_lists(self):
         """Acquire Lists from a board.."""
@@ -218,6 +236,7 @@ class Board(TrelloBaseObject):
         self.__checklists = [Checklist(json['id']) for json in response.json()]
         return response
 
+
 class List(TrelloBaseObject):
     def __init__(self, id: str):
         super().__init__(id, 'lists')
@@ -228,6 +247,7 @@ class List(TrelloBaseObject):
     def cards(self):
         return self.__cards
 
+
 class Card(TrelloBaseObject):
     def __init__(self, id: str):
         super().__init__(id, 'cards')
@@ -237,6 +257,7 @@ class Card(TrelloBaseObject):
     @property
     def checklists(self):
         return self.__checklists
+
 
 class Checklist(TrelloBaseObject):
     def __init__(self, id: str):
@@ -254,20 +275,31 @@ os.environ['trello_token'] = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720eb
 
 brd = Board('62221524f3b7441300da7a88')
 
-# brd.get_self()
-# brd.populate()
+brd.get_self()
+brd.get_lists()
+for lst in brd.lists:
+    lst.get_self()
 
-print(brd['name'], brd['id'])
 
-for obj in brd.lists:
-    print(obj['id'], obj['name'])
+# ACESSING VALUES THROUGH object[] syntax
+# [str] -> str
+# print(brd['name'], '\n')
 
-for obj in brd.children:
-    obj: List
-    print(obj.to_tuple('name', 'id'))
+# [str, ...] -> json{str: val, str: val, ...}
+# print(brd['name', 'id'], '\n')
 
-for obj in extract(brd.lists, 'id', 'name', 'idBoard'):
-    print(obj)
 
-for obj in search(brd.lists, 'name', 'PEDIDOS', 'id', 'name'):
-    print(obj)
+
+# [list] -> list[json, ...]
+# print(brd[brd.lists],'\n')
+
+# # [list, str, ...] -> list[json, ...]
+# print(brd[brd.lists, 'name', 'id'],'\n') 
+
+
+
+# # [list, (str, str)]   |   [list, (str, [str, ...])] -> list[json, ...]
+# print(brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}], '\n')
+
+# # [list, (str, str), str, ...]   |   [list, (str, [str, ...]), str, ...] -> list[json, ...]
+# print(brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}, 'name', 'id'], '\n')
