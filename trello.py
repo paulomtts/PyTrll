@@ -28,6 +28,8 @@
 # the appropriate request, thus ensuring that any data in a property in all likelihood originated 
 # from Trello. Python does not enforce property privacy, therefore we cannot truly prevent a 
 # developer from meddling with this system.
+# #############################################################################################
+
 HELP = """
 # Simple object setup
 >>> brd = Board('id_number_here')
@@ -66,7 +68,6 @@ HELP = """
 # [list, (str, str), str, ...]   |   [list, (str, [str, ...]), str, ...] -> list[json, ...]
 >>> brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}, 'name', 'id']
 """
-# ##############################################################################################
 
 from abc import ABC, abstractmethod
 
