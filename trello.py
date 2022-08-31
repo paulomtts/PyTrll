@@ -39,14 +39,11 @@
 # ##############################################################################################
 
 from abc import ABC, abstractmethod
-from collections import namedtuple
-from pydantic import BaseModel
 
 import requests as rq
 import itertools
 import json
 import os
-
 
 
 class TrelloAPIError(Exception):
@@ -72,6 +69,7 @@ class TrelloAPIError(Exception):
 
 class TrelloBaseObject(ABC):
     """A generic blueprint Trello objects."""
+    
     @abstractmethod
     def __init__(self, id: str, prefix: str):        
         self.__id           :str      =id
@@ -80,6 +78,10 @@ class TrelloBaseObject(ABC):
 
         self.__key          :str      =os.environ['trello_key']
         self.__token        :str      =os.environ['trello_token']
+        self.__query        :dict     ={'key':      self.__key,
+                                        'token':    self.__token}
+        
+        self.__batch        :list     =[]
         
 
     def __getitem__(self, *tup: str):
@@ -103,6 +105,7 @@ class TrelloBaseObject(ABC):
         # Multiple arguments ############
         else:
             
+            # [str, str, str, ...]
             if all(isinstance(el, str) for el in tup[0]):
                 return json.dumps({key: self.json[key] for key in tup[0]})
 
@@ -166,22 +169,65 @@ class TrelloBaseObject(ABC):
     def id(self):
         return self.__id
 
-    # PRIVATE ##############################################################  
-    def _build_url(self, body: str) -> str:
-        return f'https://api.trello.com/1/{body}?key={self.__key}&token={self.__token}'
+    @property
+    def batch(self):
+        return self.__batch
 
-    def _request(self, method: str, id: str='', body: str='', query: dict=None):
-        url = self._build_url(f'{self.__prefix}/{id}/{body}')
+
+    # PRIVATE ##############################################################
+    def _add_params(self, **params):
+        self.__query.update(params)
+
+    def _del_params(self, keys: list):
+        for key in keys:
+            self.__query.pop(key, None)
+
+    def _build_url(self, body: str) -> str:
+        return f'https://api.trello.com/1/{body}'
+
+    def _request(self, method: str, id: str = '', body: str = '', query: dict = None, **params):
+        if body == 'batch':
+            url = self._build_url(f'batch')
+        else:
+            if id == '': 
+                slash = ''
+            else:
+                slash = '/'
+            url = self._build_url(f'{self.__prefix}/{id}{slash}{body}')
+
+        if not query: 
+            query = self.__query
+        if params:
+            query.update(params)
+
         response = rq.request(method, url, params=query)
-        
+       
         if response.status_code != 200:
             raise TrelloAPIError(response)
         return response
+    
 
-    # SCRIPT METHODS #######################################################
-    def get_children(self):
-        """Get children entities from Trello and instantiate them as objects."""
-        pass
+    # METHODS ##############################################################   
+    def clear_batch(self):
+        """Clear up the batch."""
+        self.__batch = []
+    
+    def queue_url(self, id: str='', body: str=''):
+        """Store an URL in the batch list, for later execution."""
+        self.__batch.append(f'/{self.__prefix}/{id}/{body}')
+    
+    def run_batch(self):
+        """Execute the current batch of URLs as requests."""
+        self._add_params(urls=','.join(self.__batch))
+        response = self._request("GET", body='batch', params=self.__query)
+        self._del_params('urls')
+        
+        self.clear_batch()
+        return response        
+
+    def dump(self, js):
+        """Pretty print a json."""
+        print(json.dumps(js, indent=4, sort_keys=False))
 
     # REQUESTS #############################################################
     def get_self(self):
@@ -275,31 +321,41 @@ os.environ['trello_token'] = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720eb
 
 brd = Board('62221524f3b7441300da7a88')
 
-brd.get_self()
-brd.get_lists()
-for lst in brd.lists:
-    lst.get_self()
+# # Simple object setup
+# brd.get_self()
+# print(brd.json)
+# brd.dump(brd.json)
+
+# brd.get_lists()
+# print(brd.lists)
+
+# for lst in brd.lists:
+#     lst.get_self()
+
+# # Queueing
+# brd.queue_url(brd.id, 'lists')
+# brd.queue_url(brd.id, 'cards')
+# print(brd.batch)
+# print(brd.run_batch().json())
+# print(brd.batch)
 
 
-# ACESSING VALUES THROUGH object[] syntax
-# [str] -> str
+# # Object[] syntax
+
+# # [str] -> str
 # print(brd['name'], '\n')
 
-# [str, ...] -> json{str: val, str: val, ...}
+# # [str, ...] -> json{str: val, str: val, ...}
 # print(brd['name', 'id'], '\n')
 
-
-
-# [list] -> list[json, ...]
+# # [list] -> list[json, ...]
 # print(brd[brd.lists],'\n')
 
 # # [list, str, ...] -> list[json, ...]
 # print(brd[brd.lists, 'name', 'id'],'\n') 
 
-
-
-# # [list, (str, str)]   |   [list, (str, [str, ...])] -> list[json, ...]
+# # # [list, (str, str)]   |   [list, (str, [str, ...])] -> list[json, ...]
 # print(brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}], '\n')
 
-# # [list, (str, str), str, ...]   |   [list, (str, [str, ...]), str, ...] -> list[json, ...]
+# # # [list, (str, str), str, ...]   |   [list, (str, [str, ...]), str, ...] -> list[json, ...]
 # print(brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}, 'name', 'id'], '\n')
