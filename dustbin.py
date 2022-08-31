@@ -116,9 +116,3 @@
     #     child.__json = json
         
     #     self.children.append(child)
-
-
-def fn(**a):
-    print(a)
-
-fn(a=0)

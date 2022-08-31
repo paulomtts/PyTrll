@@ -22,20 +22,50 @@
 #
 # All objects possess the following properties:
 # - json:       a JSON acquire from the Trello API corresponding to this object's id property.
-# - children:   a list of instances of children objects (refer to the Trello Hierarchy)
 # - id:         an identification string from Trello, this is provided for conveniency
 #
 # There are no setter properties for any objects. Any setting of variables must be done through 
 # the appropriate request, thus ensuring that any data in a property in all likelihood originated 
-# from Trello. Python does not enforce property privacy, therefore we cannot prevent developer 
-# meddling with this system.
-#  
-#                              ### NAMED TUPLES NAMING CONVENTION ###
-# 
-# There are three functions whose returns are or include namedTuples: extract(), search() and 
-# to_tuple(). The first two return generators containing namedTuples, whose names are the same
-# as the calling function. The result of to_tuple() is named after the originating object, since
-# it represents a fraction of it.
+# from Trello. Python does not enforce property privacy, therefore we cannot truly prevent a 
+# developer from meddling with this system.
+HELP = """
+# Simple object setup
+>>> brd = Board('id_number_here')
+>>> brd.get_self()
+>>> brd.dump(brd.json)
+
+>>> brd.get_lists()
+>>> print(brd.lists)
+
+>>> for lst in brd.lists:
+>>>     lst.get_self()
+
+# Queueing
+>>> brd.queue_url(brd.id, 'lists')
+>>> brd.queue_url(brd.id, 'cards')
+>>> print(brd.batch)
+>>> print(brd.run_batch().json())
+>>> print(brd.batch)
+
+
+# [str] -> str
+>>> brd['name']
+
+# [str, ...] -> json{str: val, str: val, ...}
+>>> brd['name', 'id']
+
+# [list] -> list[json, ...]
+>>> brd[brd.lists]
+
+# [list, str, ...] -> list[json, ...]
+>>> brd[brd.lists, 'name', 'id'] 
+
+# [list, (str, str)]   |   [list, (str, [str, ...])] -> list[json, ...]
+>>> brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}]
+
+# [list, (str, str), str, ...]   |   [list, (str, [str, ...]), str, ...] -> list[json, ...]
+>>> brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}, 'name', 'id']
+"""
 # ##############################################################################################
 
 from abc import ABC, abstractmethod
@@ -208,6 +238,10 @@ class TrelloBaseObject(ABC):
     
 
     # METHODS ##############################################################   
+    def help(self):
+        """Print usefull object usage information."""
+        print(HELP)
+    
     def clear_batch(self):
         """Clear up the batch."""
         self.__batch = []
@@ -265,7 +299,7 @@ class Board(TrelloBaseObject):
     
     # REQUESTS #############################################################
     def get_lists(self):
-        """Acquire Lists from a board.."""
+        """Acquire Lists from a board."""
         response = self._request('GET', self.id, 'lists')
         self.__lists = [List(json['id']) for json in response.json()]
         return response
@@ -321,41 +355,4 @@ os.environ['trello_token'] = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720eb
 
 brd = Board('62221524f3b7441300da7a88')
 
-# # Simple object setup
-# brd.get_self()
-# print(brd.json)
-# brd.dump(brd.json)
-
-# brd.get_lists()
-# print(brd.lists)
-
-# for lst in brd.lists:
-#     lst.get_self()
-
-# # Queueing
-# brd.queue_url(brd.id, 'lists')
-# brd.queue_url(brd.id, 'cards')
-# print(brd.batch)
-# print(brd.run_batch().json())
-# print(brd.batch)
-
-
-# # Object[] syntax
-
-# # [str] -> str
-# print(brd['name'], '\n')
-
-# # [str, ...] -> json{str: val, str: val, ...}
-# print(brd['name', 'id'], '\n')
-
-# # [list] -> list[json, ...]
-# print(brd[brd.lists],'\n')
-
-# # [list, str, ...] -> list[json, ...]
-# print(brd[brd.lists, 'name', 'id'],'\n') 
-
-# # # [list, (str, str)]   |   [list, (str, [str, ...])] -> list[json, ...]
-# print(brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}], '\n')
-
-# # # [list, (str, str), str, ...]   |   [list, (str, [str, ...]), str, ...] -> list[json, ...]
-# print(brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}, 'name', 'id'], '\n')
+brd.help()
