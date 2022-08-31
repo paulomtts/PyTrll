@@ -349,4 +349,3 @@ class Checklist(TrelloBaseObject):
     @property
     def checkitems(self):
         return self.__checkitems
-
