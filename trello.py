@@ -350,10 +350,3 @@ class Checklist(TrelloBaseObject):
     def checkitems(self):
         return self.__checkitems
 
-
-os.environ['trello_key'] = '637c56e248984ec499c0361ccb63f695'
-os.environ['trello_token'] = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
-
-brd = Board('62221524f3b7441300da7a88')
-
-brd.help()
