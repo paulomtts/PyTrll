@@ -69,9 +69,12 @@ HELP = """
 >>> brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}, 'name', 'id']
 """
 
+from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
+from threading import Thread
 
 import requests as rq
+import httpx as hx
 import itertools
 import json
 import os
@@ -97,6 +100,19 @@ class TrelloAPIError(Exception):
         message = TrelloAPIError.STATUS_CODES.get(response.status_code, 'Unknown status code.') + f' Status Code: {response.status_code}.'
         super().__init__(message)
 
+
+class RequestHandler(ABC):
+    """Sort requests into sequential or multithread. In case of the latter,
+    execution defaults to batches of 10 requests, as the average time
+    for a request is 1 second, and Trello limits us to 100 every 10 seconds."""
+    
+    multithreading = False
+    
+    @abstractmethod
+    def __init__(self) -> None:
+        self.pool   :list   = []
+
+print(RequestHandler.multithreading)
 
 class TrelloBaseObject(ABC):
     """A generic blueprint Trello objects."""
@@ -125,11 +141,11 @@ class TrelloBaseObject(ABC):
             if not isinstance(arg, (list, str)):
                 raise TypeError(f"Single arguments can only be {str.__class__} or {list.__class__}.")
 
-            # [str] -> str
+            # Single string: [str] -> str
             if isinstance(arg, str):
                 return self.json[arg]
 
-            # [list] -> list[json, ...]
+            # List of JSONs: [list] -> list[json, ...]
             elif isinstance(arg, list) and all(isinstance(key, (Board, List, Card)) for key in arg[1:]):
                 return [obj.json for obj in arg]
         
@@ -237,7 +253,6 @@ class TrelloBaseObject(ABC):
             raise TrelloAPIError(response)
         return response
     
-
     # METHODS ##############################################################   
     def help(self):
         """Print usefull object usage information."""
@@ -260,9 +275,37 @@ class TrelloBaseObject(ABC):
         self.clear_batch()
         return response        
 
-    def dump(self, js):
+    def dump(self, js=None):
         """Pretty print a json."""
+        if js == None:
+            js = self.json
         print(json.dumps(js, indent=4, sort_keys=False))
+
+    # SCRIPT METHODS ####################################################### 
+    def set_children(self):
+        """Fully setup all objects belonging to the layer hierarchically below this object.
+        Example: when called from a Board object, this method will setup all lists belonging to
+        that board."""
+
+        self.get_self()
+
+        fn_sw = {'boards': self.get_lists, 
+                  'lists':  self.get_cards, 
+                  'cards': self.get_checklists}
+        function = fn_sw[self.__prefix]
+        function()
+        
+        obj_sw = {'boards': self.lists, 
+                  'lists':  self.cards, 
+                  'cards': self.checklists}
+        object_lst = obj_sw[self.__prefix]
+
+        with ThreadPoolExecutor() as executor:
+            for object in object_lst:
+                executor.map(object.get_self)
+        
+        # for object in object_lst:
+        #     object.get_self()
 
     # REQUESTS #############################################################
     def get_self(self):
@@ -349,3 +392,16 @@ class Checklist(TrelloBaseObject):
     @property
     def checkitems(self):
         return self.__checkitems
+
+import time
+os.environ['trello_key'] = '637c56e248984ec499c0361ccb63f695'
+os.environ['trello_token'] = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
+
+start = time.perf_counter()
+brd = Board('62221524f3b7441300da7a88')
+brd.set_children()
+end = time.perf_counter()
+
+print(end-start)
+# brd.dump()
+# brd.help()
