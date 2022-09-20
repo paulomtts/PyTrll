@@ -1,3 +1,4 @@
+HELP = """
 # Developer: Paulo Mattos
 # API: https://developer.atlassian.com/cloud/trello/rest/
 #
@@ -30,7 +31,6 @@
 # developer from meddling with this system.
 # #############################################################################################
 
-HELP = """
 # Simple object setup
 >>> brd = Board('id_number_here')
 >>> brd.get_self()
@@ -41,14 +41,6 @@ HELP = """
 
 >>> for lst in brd.lists:
 >>>     lst.get_self()
-
-# Queueing
->>> brd.queue_url(brd.id, 'lists')
->>> brd.queue_url(brd.id, 'cards')
->>> print(brd.batch)
->>> print(brd.run_batch().json())
->>> print(brd.batch)
-
 
 # [str] -> str
 >>> brd['name']
@@ -71,14 +63,10 @@ HELP = """
 
 from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
-from threading import Thread
 
 import requests as rq
-import httpx as hx
 import itertools
 import json
-import os
-
 
 class TrelloAPIError(Exception):
     """The Trello exception class."""
@@ -101,35 +89,41 @@ class TrelloAPIError(Exception):
         super().__init__(message)
 
 
-class RequestHandler(ABC):
+class App():
     """Sort requests into sequential or multithread. In case of the latter,
     execution defaults to batches of 10 requests, as the average time
     for a request is 1 second, and Trello limits us to 100 every 10 seconds."""
-    
-    multithreading = False
-    
-    @abstractmethod
-    def __init__(self) -> None:
-        self.pool   :list   = []
 
-print(RequestHandler.multithreading)
+
+    def __init__(self, key: str, token: str) -> None:
+        super().__init__()
+        self.query  :dict = {'key'     : key,
+                             'token'   : token}
+
+    def queue(self, data: dict):
+        """Execute a dictionary of functions (with their respective args)
+        with multiple threads."""
+
+        for fn, values in data.items():
+            if values == []:
+                data[fn] = [[], {}]
+
+        with ThreadPoolExecutor() as executor:
+            for fn, (args, kwargs) in data.items():
+                executor.submit(fn, *args, **kwargs)
+
 
 class TrelloBaseObject(ABC):
     """A generic blueprint Trello objects."""
     
     @abstractmethod
-    def __init__(self, id: str, prefix: str):        
-        self.__id           :str      =id
-        self.__json         :json     =None
-        self.__prefix       :str      =prefix
+    def __init__(self, app: App, id: str, prefix: str):   
+        self.__app          :App = app
 
-        self.__key          :str      =os.environ['trello_key']
-        self.__token        :str      =os.environ['trello_token']
-        self.__query        :dict     ={'key':      self.__key,
-                                        'token':    self.__token}
-        
-        self.__batch        :list     =[]
-        
+        self.__id           :str       = id
+        self.__json         :json      = None
+        self.__prefix       :str       = prefix
+
 
     def __getitem__(self, *tup: str):
         """Contains search mechanisms."""
@@ -209,71 +203,44 @@ class TrelloBaseObject(ABC):
 
     # PROPERTIES ###########################################################    
     @property
+    def id(self):
+        return self.__id
+    
+    @property
     def json(self):
         return self.__json
 
     @property
-    def id(self):
-        return self.__id
-
-    @property
-    def batch(self):
-        return self.__batch
-
+    def app(self):
+        return self.__app
 
     # PRIVATE ##############################################################
-    def _add_params(self, **params):
-        self.__query.update(params)
-
-    def _del_params(self, keys: list):
-        for key in keys:
-            self.__query.pop(key, None)
-
     def _build_url(self, body: str) -> str:
         return f'https://api.trello.com/1/{body}'
 
     def _request(self, method: str, id: str = '', body: str = '', query: dict = None, **params):
-        if body == 'batch':
-            url = self._build_url(f'batch')
-        else:
-            if id == '': 
-                slash = ''
-            else:
-                slash = '/'
-            url = self._build_url(f'{self.__prefix}/{id}{slash}{body}')
+
+        if id != '': 
+            slash = '/'
+
+        url = self._build_url(f'{self.__prefix}/{id}{slash}{body}')
 
         if not query: 
-            query = self.__query
+            query = self.__app.query
         if params:
             query.update(params)
 
         response = rq.request(method, url, params=query)
-       
+
         if response.status_code != 200:
             raise TrelloAPIError(response)
         return response
+
     
     # METHODS ##############################################################   
     def help(self):
         """Print usefull object usage information."""
-        print(HELP)
-    
-    def clear_batch(self):
-        """Clear up the batch."""
-        self.__batch = []
-    
-    def queue_url(self, id: str='', body: str=''):
-        """Store an URL in the batch list, for later execution."""
-        self.__batch.append(f'/{self.__prefix}/{id}/{body}')
-    
-    def run_batch(self):
-        """Execute the current batch of URLs as requests."""
-        self._add_params(urls=','.join(self.__batch))
-        response = self._request("GET", body='batch', params=self.__query)
-        self._del_params('urls')
-        
-        self.clear_batch()
-        return response        
+        print(HELP) 
 
     def dump(self, js=None):
         """Pretty print a json."""
@@ -295,17 +262,13 @@ class TrelloBaseObject(ABC):
         function = fn_sw[self.__prefix]
         function()
         
+
         obj_sw = {'boards': self.lists, 
                   'lists':  self.cards, 
                   'cards': self.checklists}
         object_lst = obj_sw[self.__prefix]
 
-        with ThreadPoolExecutor() as executor:
-            for object in object_lst:
-                executor.map(object.get_self)
-        
-        # for object in object_lst:
-        #     object.get_self()
+        self.app.queue({obj.get_self: [] for obj in object_lst})
 
     # REQUESTS #############################################################
     def get_self(self):
@@ -322,8 +285,8 @@ class TrelloBaseObject(ABC):
 
 
 class Board(TrelloBaseObject):
-    def __init__(self, id: str):
-        super().__init__(id, 'boards')
+    def __init__(self, app: App, id: str):
+        super().__init__(app, id, 'boards')
         self.__lists = None
         self.__cards = None
         self.__checklists = None
@@ -345,25 +308,25 @@ class Board(TrelloBaseObject):
     def get_lists(self):
         """Acquire Lists from a board."""
         response = self._request('GET', self.id, 'lists')
-        self.__lists = [List(json['id']) for json in response.json()]
+        self.__lists = [List(self.app, json['id']) for json in response.json()]
         return response
     
     def get_cards(self):
         """Acquire Cards from a board or list in Trello."""
         response = self._request('GET', self.id, 'cards')
-        self.__cards = [Card(json['id']) for json in response.json()]
+        self.__cards = [Card(self.app, json['id']) for json in response.json()]
         return response
 
     def get_checklists(self):
         """Acquire Checklists from a board.."""
         response = self._request('GET', self.id, 'checklists')
-        self.__checklists = [Checklist(json['id']) for json in response.json()]
+        self.__checklists = [Checklist(self.app, json['id']) for json in response.json()]
         return response
 
 
 class List(TrelloBaseObject):
-    def __init__(self, id: str):
-        super().__init__(id, 'lists')
+    def __init__(self, app: App, id: str):
+        super().__init__(app, id, 'lists')
         self.__cards = None
 
     # PROPERTIES ###########################################################    
@@ -373,8 +336,8 @@ class List(TrelloBaseObject):
 
 
 class Card(TrelloBaseObject):
-    def __init__(self, id: str):
-        super().__init__(id, 'cards')
+    def __init__(self, app: App, id: str):
+        super().__init__(app, id, 'cards')
         self.__checklists = None
 
     # PROPERTIES ###########################################################    
@@ -384,8 +347,8 @@ class Card(TrelloBaseObject):
 
 
 class Checklist(TrelloBaseObject):
-    def __init__(self, id: str):
-        super().__init__(id, 'checklists')
+    def __init__(self, app: App, id: str):
+        super().__init__(app, id, 'checklists')
         self.__checkitems = None
 
     # PROPERTIES ###########################################################    
@@ -394,14 +357,22 @@ class Checklist(TrelloBaseObject):
         return self.__checkitems
 
 import time
-os.environ['trello_key'] = '637c56e248984ec499c0361ccb63f695'
-os.environ['trello_token'] = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
+key = '637c56e248984ec499c0361ccb63f695'
+token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
+brd_id = '62221524f3b7441300da7a88'
+
 
 start = time.perf_counter()
-brd = Board('62221524f3b7441300da7a88')
+
+app = App(key, token)
+brd = Board(app, brd_id)
 brd.set_children()
+
 end = time.perf_counter()
 
-print(end-start)
-# brd.dump()
-# brd.help()
+print(f'{end-start:.4f} seconds')
+
+
+brd.dump()
+for chd in brd.lists:
+    chd.dump()
