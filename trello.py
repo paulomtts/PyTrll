@@ -7,10 +7,6 @@ HELP = """
 # The goal of this module is NOT to precisely reflect Trello's API, but rather to provide a
 # simple set of tools with which to allow python users to easily read and manipulate Trello.
 #
-# This module uses enviroment variables to acquire the Trello key & token. Be sure
-# to set them before instantiating any objects. Their names are 'trello_key' and 
-# 'trello_token'.
-#
 #                                   ### METHOD RATIONALE ###
 #
 # PROPERTIES:       single-purpose | private | properties of an object
@@ -22,7 +18,7 @@ HELP = """
 #                                   ### OBJECT PROPERTIES ###
 #
 # All objects possess the following properties:
-# - json:       a JSON acquire from the Trello API corresponding to this object's id property.
+# - json:       a JSON acquired from the Trello API corresponding to this object's id property.
 # - id:         an identification string from Trello, this is provided for conveniency
 #
 # There are no setter properties for any objects. Any setting of variables must be done through 
@@ -31,15 +27,15 @@ HELP = """
 # developer from meddling with this system.
 # #############################################################################################
 
-# Object setup
+# Object setup ################################################################################
 >>> brd = Board('id_number_here')
 
-# Printing jsons
+# Printing jsons ##############################################################################
 >>> print(brd.json)
 >>> brd.dump(brd.json)
 
 
-# Sequential requests
+# Sequential requests #########################################################################
 >>> brd.get_self()
 >>> brd.get_lists()
 
@@ -47,7 +43,7 @@ HELP = """
 >>>     lst.get_self()
 
 
-# Multithreading requests
+# Multithreading requests #####################################################################
 >>> for fn in [brd.get_self, brd.get_lists]:
 >>>     brd.app.queue(fn)
 >>> print(brd.app.execute())
@@ -56,8 +52,10 @@ HELP = """
 >>>     brd.app.queue(lst.get_self)
 >>> print(brd.app.execute())
 
+>>> brd.app.queue(brd.lists[0].update_self, ({'name': 'NEW NAME'}))
 
-# Acessing properties
+
+# Acessing properties #########################################################################
 # [str] -> str
 >>> brd['name']
 
@@ -83,6 +81,7 @@ from abc import ABC, abstractmethod
 import requests as rq
 import itertools
 import json
+import time
 import os
 
 class APIError(Exception):
@@ -109,13 +108,14 @@ class APIError(Exception):
 class App():
     """Hold the query dictionary and handle concurrent requests."""
 
-    def __init__(self, key: str, token: str, threads: int = None, chunk_size: int = None) -> None:
+    def __init__(self, key: str, token: str, threads: int = None, chunk_size: int = None, api_interval: float = 0.175) -> None:
         super().__init__()
         self.query              :dict   = {'key'     : key,
                                            'token'   : token}
         self.__request_pool     :list   = [[],]
         self.__current_pool     :int    = 0
         self.__chunk_size       :int    = chunk_size
+        self.__api_interval     :float  = api_interval
 
         if threads != None:
             self.threads = threads
@@ -142,6 +142,10 @@ class App():
     def chunk_size(self):
         return self.__chunk_size
 
+    @property
+    def api_interval(self):
+        return self.__api_interval
+
     # METHODS ##############################################################   
     def queue(self, func, *args, **kwargs):
         """Queue function to be executed concurrently. Queues have a maximum size,
@@ -164,23 +168,26 @@ class App():
         will execute only the functions in that pool, otherwise it will execute all
         functions in all pools."""
 
-        with ThreadPoolExecutor(self.threads) as executor:
-            if pool_number is None:
-                response_lake = []
+        if pool_number is None:
+            response_lake = []
+            
+            for pool in self.__request_pool:
+                response_lst = []
                 
-                for pool in self.__request_pool:
-                    response_lst = []
-                    
+                with ThreadPoolExecutor(self.threads) as executor:
                     for (fn, args, kwargs) in pool:
                         response_lst.append(executor.submit(fn, *args, **kwargs))
                     response_lake.append(response_lst)
-                
-                self.__request_pool = []
-                self.__current_pool = 0
-                
-                result = response_lake
+                    executor
+                time.sleep(self.api_interval)
+            
+            self.__request_pool = []
+            self.__current_pool = 0
+            
+            result = response_lake
 
-            else:
+        else:
+            with ThreadPoolExecutor(self.threads) as executor:
                 response_lst = []
 
                 for (fn, args, kwargs) in self.__request_pool[pool_number]:
@@ -189,7 +196,7 @@ class App():
                 self.__request_pool.pop(pool_number)
                 self.__current_pool = len(self.__request_pool)-1
                 
-                result = response_lst
+            result = response_lst
            
         if all(isinstance(obj, list) for obj in result):
             result = [[res.result() for res in lst] for lst in result]
@@ -204,7 +211,7 @@ class BaseObject(ABC):
     
     @abstractmethod
     def __init__(self, app: App, id: str, prefix: str):   
-        self.__app          :App = app
+        self.__app          :App       = app
 
         self.__id           :str       = id
         self.__json         :json      = None
@@ -311,7 +318,10 @@ class BaseObject(ABC):
         url = self._build_url(f'{self.__prefix}/{id}{slash}{body}')
 
         if not query: 
-            query = self.__app.query
+            query = self.app.query
+        else:
+            query.update(self.app.query)
+
         if params:
             query.update(params)
         
@@ -325,13 +335,20 @@ class BaseObject(ABC):
     # METHODS ##############################################################   
     def help(self):
         """Print usefull object usage information."""
+
         print(HELP) 
 
-    def dump(self, js=None):
+    def dump(self, js = None):
         """Pretty print a json."""
+        
         if js == None:
             js = self.json
-        print(json.dumps(js, indent=4, sort_keys=False))
+        
+        if not isinstance(js, list):
+            js = [js]
+
+        for obj in js:
+            print(json.dumps(obj, indent=4, sort_keys=False))
 
     # SCRIPT METHODS ####################################################### 
     def set_children(self):
@@ -441,32 +458,24 @@ class Checklist(BaseObject):
     def checkitems(self):
         return self.__checkitems
 
-import time
 key = '637c56e248984ec499c0361ccb63f695'
 token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
 brd_id = '62221524f3b7441300da7a88'
 
-
 start = time.perf_counter()
+
 
 app = App(key, token)
 brd = Board(app, brd_id)
 
-brd.set_children()
-
-# for fn in [brd.get_self, brd.get_lists]:
-#     brd.app.queue(fn)
-# print(brd.app.execute())
-
-# for lst in brd.lists:
-#     brd.app.queue(lst.get_self)
-# print(brd.app.execute()
-
-
+# brd.set_children()
+for i in range(30):
+    app.queue(brd.get_self)
+app.execute()
 
 brd.dump()
-for chd in brd.lists:
-    chd.dump()
+# brd.dump([lst.json for lst in brd.lists])
+
 
 end = time.perf_counter()
 print(f'{end-start:.4f} seconds')
