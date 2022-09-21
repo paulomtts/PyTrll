@@ -2,6 +2,10 @@
 Trello API: https://developer.atlassian.com/cloud/trello/rest/
 Main Developer: Paulo Mattos
 
+### NEXT UPDATES
+[ ] Add the Checkitem class
+[ ] Create various requests for all existing classes
+
 ## GOAL
 The goal of this module is NOT to precisely reflect Trello's API, but rather to provide a
 simple set of tools with which to allow python users to easily read and manipulate Trello.
@@ -23,6 +27,8 @@ the appropriate request, thus ensuring that any data in a property in all likeli
 from Trello. Python does not enforce property privacy, therefore we cannot truly prevent a 
 developer from meddling with this system.
 
+
+# USAGE EXAMPLES
 
 ## Object setup
 ```

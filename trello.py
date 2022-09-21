@@ -130,7 +130,7 @@ class App():
 
 
 class BaseObject(ABC):
-    """A generic blueprint Trello objects."""
+    """A generic blueprint for Trello objects."""
     
     @abstractmethod
     def __init__(self, app: App, id: str, prefix: str):   
