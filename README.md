@@ -7,15 +7,11 @@ The goal of this module is NOT to precisely reflect Trello's API, but rather to 
 simple set of tools with which to allow python users to easily read and manipulate Trello.
 
 ## METHOD RATIONALE
-PROPERTIES:       single-purpose | private | properties of an object
-
-PRIVATE:          single-purpose | private | only accessible to itself or its heirs
-
-METHODS:          single-purpose | public  | general tasks
-
-SCRIPT METHODS:   multi-purpose  | public  | provided for convenience
-
-REQUESTS:         single-purpose | public  | perform requests on the Trello API
+* PROPERTIES:       single-purpose | private | properties of an object
+* PRIVATE:          single-purpose | private | only accessible to itself or its heirs
+* METHODS:          single-purpose | public  | general tasks
+* SCRIPT METHODS:   multi-purpose  | public  | provided for convenience
+* REQUESTS:         single-purpose | public  | perform requests on the Trello API
 
 ## OBJECT PROPERTIES 
 All objects possess the following properties:
