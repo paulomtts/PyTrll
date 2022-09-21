@@ -350,18 +350,18 @@ class BaseObject(ABC):
         for obj in js:
             print(json.dumps(obj, indent=4, sort_keys=False))
 
-    # SCRIPT METHODS ####################################################### 
+    # SCRIPT METHODS #######################################################
     def set_children(self):
         """Fully setup all objects belonging to the layer hierarchically below this object.
         Example: when called from a Board object, this method will setup all lists belonging to
         that board."""
 
-        fn_sw = {'boards': self.get_lists, 
+        fnc_sw = {'boards': self.get_lists, 
                   'lists':  self.get_cards, 
                   'cards': self.get_checklists}
         
         self.app.queue(self.get_self)
-        self.app.queue(fn_sw[self.__prefix])
+        self.app.queue(fnc_sw[self.__prefix])
         self.app.execute()
 
         obj_sw = {'boards': self.lists, 
@@ -457,25 +457,3 @@ class Checklist(BaseObject):
     @property
     def checkitems(self):
         return self.__checkitems
-
-key = '637c56e248984ec499c0361ccb63f695'
-token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
-brd_id = '62221524f3b7441300da7a88'
-
-start = time.perf_counter()
-
-
-app = App(key, token)
-brd = Board(app, brd_id)
-
-# brd.set_children()
-for i in range(30):
-    app.queue(brd.get_self)
-app.execute()
-
-brd.dump()
-# brd.dump([lst.json for lst in brd.lists])
-
-
-end = time.perf_counter()
-print(f'{end-start:.4f} seconds')
