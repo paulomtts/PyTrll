@@ -3,8 +3,8 @@ Trello API: https://developer.atlassian.com/cloud/trello/rest/
 Main Developer: Paulo Mattos
 
 ### NEXT UPDATES
-[ ] Add the Checkitem class
-[ ] Create various requests for all existing classes
+- [ ] Add the Checkitem class
+- [ ] Create various requests for all existing classes
 
 ## GOAL
 The goal of this module is NOT to precisely reflect Trello's API, but rather to provide a
