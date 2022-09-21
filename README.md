@@ -60,7 +60,7 @@ for lst in brd.lists:
     app.queue(lst.get_self)
 app.execute()
 
-app.queue(brd.lists[0].update_self, ({'name': 'NEW NAME'}))
+app.queue(brd.lists[0].update_self, ({'name': 'sample_name0'}))
 app.execute()
 ```
 
@@ -79,8 +79,8 @@ brd[brd.lists]
 brd[brd.lists, 'name', 'id'] 
 
 # [list, (str, str)]   |   [list, (str, [str, ...])] -> list[json, ...]
-brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}]
+brd[brd.lists, {'name': ['sample_name0', 'sample_name1']}]
 
 # [list, (str, str), str, ...]   |   [list, (str, [str, ...]), str, ...] -> list[json, ...]
-brd[brd.lists, {'name': ['PEDIDOS', 'dev_list']}, 'name', 'id']
+brd[brd.lists, {'name': ['sample_name0', 'sample_name1']}, 'name', 'id']
 ```
