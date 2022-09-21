@@ -2,18 +2,22 @@
 Trello API: https://developer.atlassian.com/cloud/trello/rest/
 Main Developer: Paulo Mattos
 
-# GOAL
+## GOAL
 The goal of this module is NOT to precisely reflect Trello's API, but rather to provide a
 simple set of tools with which to allow python users to easily read and manipulate Trello.
 
-# METHOD RATIONALE
+## METHOD RATIONALE
 PROPERTIES:       single-purpose | private | properties of an object
+
 PRIVATE:          single-purpose | private | only accessible to itself or its heirs
+
 METHODS:          single-purpose | public  | general tasks
+
 SCRIPT METHODS:   multi-purpose  | public  | provided for convenience
+
 REQUESTS:         single-purpose | public  | perform requests on the Trello API
 
-# OBJECT PROPERTIES 
+## OBJECT PROPERTIES 
 All objects possess the following properties:
 - json:       a JSON acquired from the Trello API corresponding to this object's id property.
 - id:         an identification string from Trello, this is provided for conveniency
@@ -26,13 +30,18 @@ developer from meddling with this system.
 
 ## Object setup
 ```
-brd = Board('id_number_here')
+key = '000'
+token = 'AAA'
+brd_id = '111'
+
+app = App(key, token)
+brd = Board(app, brd_id)
 ```
 
 ## Printing jsons 
 ```
 print(brd.json)
-brd.dump(brd.json)
+brd.dump()
 ```
 
 
@@ -48,14 +57,15 @@ for lst in brd.lists:
 ## Multithreading requests
 ```
 for fn in [brd.get_self, brd.get_lists]:
-    brd.app.queue(fn)
-print(brd.app.execute())
+    app.queue(fn)
+app.execute()
 
 for lst in brd.lists:
-    brd.app.queue(lst.get_self)
-print(brd.app.execute())
+    app.queue(lst.get_self)
+app.execute()
 
-brd.app.queue(brd.lists[0].update_self, ({'name': 'NEW NAME'}))
+app.queue(brd.lists[0].update_self, ({'name': 'NEW NAME'}))
+app.execute()
 ```
 
 ## Acessing properties
