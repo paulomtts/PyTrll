@@ -31,17 +31,33 @@ HELP = """
 # developer from meddling with this system.
 # #############################################################################################
 
-# Simple object setup
+# Object setup
 >>> brd = Board('id_number_here')
->>> brd.get_self()
+
+# Printing jsons
+>>> print(brd.json)
 >>> brd.dump(brd.json)
 
+
+# Sequential requests
+>>> brd.get_self()
 >>> brd.get_lists()
->>> print(brd.lists)
 
 >>> for lst in brd.lists:
 >>>     lst.get_self()
 
+
+# Multithreading requests
+>>> for fn in [brd.get_self, brd.get_lists]:
+>>>     brd.app.queue(fn)
+>>> print(brd.app.execute())
+
+>>> for lst in brd.lists:
+>>>     brd.app.queue(lst.get_self)
+>>> print(brd.app.execute())
+
+
+# Acessing properties
 # [str] -> str
 >>> brd['name']
 
@@ -67,8 +83,9 @@ from abc import ABC, abstractmethod
 import requests as rq
 import itertools
 import json
+import os
 
-class TrelloAPIError(Exception):
+class APIError(Exception):
     """The Trello exception class."""
 
     STATUS_CODES = {
@@ -85,35 +102,104 @@ class TrelloAPIError(Exception):
     }
 
     def __init__(self, response: rq.Response) -> None:
-        message = TrelloAPIError.STATUS_CODES.get(response.status_code, 'Unknown status code.') + f' Status Code: {response.status_code}.'
+        message = APIError.STATUS_CODES.get(response.status_code, 'Unknown status code.') + f' Status Code: {response.status_code}.'
         super().__init__(message)
 
 
 class App():
-    """Sort requests into sequential or multithread. In case of the latter,
-    execution defaults to batches of 10 requests, as the average time
-    for a request is 1 second, and Trello limits us to 100 every 10 seconds."""
+    """Hold the query dictionary and handle concurrent requests."""
 
-
-    def __init__(self, key: str, token: str) -> None:
+    def __init__(self, key: str, token: str, threads: int = None, chunk_size: int = None) -> None:
         super().__init__()
-        self.query  :dict = {'key'     : key,
-                             'token'   : token}
+        self.query              :dict   = {'key'     : key,
+                                           'token'   : token}
+        self.__request_pool     :list   = [[],]
+        self.__current_pool     :int    = 0
+        self.__chunk_size       :int    = chunk_size
 
-    def queue(self, data: dict):
-        """Execute a dictionary of functions (with their respective args)
-        with multiple threads."""
+        if threads != None:
+            self.threads = threads
+        else:
+            self.threads = os.cpu_count() + 4
 
-        for fn, values in data.items():
-            if values == []:
-                data[fn] = [[], {}]
+        if chunk_size != None:
+            self.__chunk_size = chunk_size
+        else:
+            self.__chunk_size = 10
 
-        with ThreadPoolExecutor() as executor:
-            for fn, (args, kwargs) in data.items():
-                executor.submit(fn, *args, **kwargs)
+    def __repr__(self) -> str:
+        return f'{self.__class__.__name__}(chunk_size={self.__chunk_size!r}, current_pool={self.__current_pool!r}, pool_lst={self.__request_pool!r})'
+
+    @property
+    def request_pool(self):
+        return self.__request_pool
+
+    @property
+    def current_pool(self):
+        return self.__current_pool
+
+    @property
+    def chunk_size(self):
+        return self.__chunk_size
+
+    # METHODS ##############################################################   
+    def queue(self, func, *args, **kwargs):
+        """Queue function to be executed concurrently. Queues have a maximum size,
+        and whenever a limit is reached, a new chunk will be created."""
+
+        if args == None: args = []
+        if kwargs == None: kwargs = {}
+
+        if len(self.__request_pool) == 0:
+            self.__request_pool.append([])
+
+        if len(self.__request_pool[self.__current_pool]) == self.__chunk_size:
+            self.__request_pool.append([])
+            self.__current_pool += 1
+
+        self.__request_pool[self.__current_pool].append((func, args, kwargs))
+
+    def execute(self, pool_number: int = None):
+        """Concurrently execute functions in the queue. If a pool number is provided,
+        will execute only the functions in that pool, otherwise it will execute all
+        functions in all pools."""
+
+        with ThreadPoolExecutor(self.threads) as executor:
+            if pool_number is None:
+                response_lake = []
+                
+                for pool in self.__request_pool:
+                    response_lst = []
+                    
+                    for (fn, args, kwargs) in pool:
+                        response_lst.append(executor.submit(fn, *args, **kwargs))
+                    response_lake.append(response_lst)
+                
+                self.__request_pool = []
+                self.__current_pool = 0
+                
+                result = response_lake
+
+            else:
+                response_lst = []
+
+                for (fn, args, kwargs) in self.__request_pool[pool_number]:
+                    response_lst.append(executor.submit(fn, *args, **kwargs))
+                
+                self.__request_pool.pop(pool_number)
+                self.__current_pool = len(self.__request_pool)-1
+                
+                result = response_lst
+           
+        if all(isinstance(obj, list) for obj in result):
+            result = [[res.result() for res in lst] for lst in result]
+        else:
+            result = [res.result() for res in result]
+        
+        return result
 
 
-class TrelloBaseObject(ABC):
+class BaseObject(ABC):
     """A generic blueprint Trello objects."""
     
     @abstractmethod
@@ -219,7 +305,6 @@ class TrelloBaseObject(ABC):
         return f'https://api.trello.com/1/{body}'
 
     def _request(self, method: str, id: str = '', body: str = '', query: dict = None, **params):
-
         if id != '': 
             slash = '/'
 
@@ -229,11 +314,11 @@ class TrelloBaseObject(ABC):
             query = self.__app.query
         if params:
             query.update(params)
-
+        
         response = rq.request(method, url, params=query)
 
         if response.status_code != 200:
-            raise TrelloAPIError(response)
+            raise APIError(response)
         return response
 
     
@@ -254,21 +339,21 @@ class TrelloBaseObject(ABC):
         Example: when called from a Board object, this method will setup all lists belonging to
         that board."""
 
-        self.get_self()
-
         fn_sw = {'boards': self.get_lists, 
                   'lists':  self.get_cards, 
                   'cards': self.get_checklists}
-        function = fn_sw[self.__prefix]
-        function()
         
+        self.app.queue(self.get_self)
+        self.app.queue(fn_sw[self.__prefix])
+        self.app.execute()
 
         obj_sw = {'boards': self.lists, 
                   'lists':  self.cards, 
                   'cards': self.checklists}
-        object_lst = obj_sw[self.__prefix]
 
-        self.app.queue({obj.get_self: [] for obj in object_lst})
+        for obj in obj_sw[self.__prefix]:
+            self.app.queue(obj.get_self)
+        self.app.execute()
 
     # REQUESTS #############################################################
     def get_self(self):
@@ -284,7 +369,7 @@ class TrelloBaseObject(ABC):
         return response
 
 
-class Board(TrelloBaseObject):
+class Board(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'boards')
         self.__lists = None
@@ -324,7 +409,7 @@ class Board(TrelloBaseObject):
         return response
 
 
-class List(TrelloBaseObject):
+class List(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'lists')
         self.__cards = None
@@ -335,7 +420,7 @@ class List(TrelloBaseObject):
         return self.__cards
 
 
-class Card(TrelloBaseObject):
+class Card(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'cards')
         self.__checklists = None
@@ -346,7 +431,7 @@ class Card(TrelloBaseObject):
         return self.__checklists
 
 
-class Checklist(TrelloBaseObject):
+class Checklist(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'checklists')
         self.__checkitems = None
@@ -366,13 +451,22 @@ start = time.perf_counter()
 
 app = App(key, token)
 brd = Board(app, brd_id)
+
 brd.set_children()
 
-end = time.perf_counter()
+# for fn in [brd.get_self, brd.get_lists]:
+#     brd.app.queue(fn)
+# print(brd.app.execute())
 
-print(f'{end-start:.4f} seconds')
+# for lst in brd.lists:
+#     brd.app.queue(lst.get_self)
+# print(brd.app.execute()
+
 
 
 brd.dump()
 for chd in brd.lists:
     chd.dump()
+
+end = time.perf_counter()
+print(f'{end-start:.4f} seconds')
