@@ -31,9 +31,10 @@ class APIError(Exception):
 class App():
     """Hold the query dictionary and handle concurrent requests."""
 
-    def __init__(self, key: str, token: str, threads: int = None, chunk_size: int = None, api_interval: float = 0.175) -> None:
+    def __init__(self, key: str, token: str, threads: int = None, chunk_size: int = None, api_interval: float = 0.5) -> None:
         super().__init__()
-        self.query              :dict   = {'key'     : key,
+        self.__headers          :dict   = {"Accept": "application/json"}
+        self.__query            :dict   = {'key'     : key,
                                            'token'   : token}
         self.__request_pool     :list   = [[],]
         self.__current_pool     :int    = 0
@@ -52,6 +53,14 @@ class App():
 
     def __repr__(self) -> str:
         return f'{self.__class__.__name__}(chunk_size={self.__chunk_size!r}, current_pool={self.__current_pool!r}, pool_lst={self.__request_pool!r})'
+
+    @property
+    def headers(self):
+        return self.__headers
+
+    @property
+    def query(self):
+        return self.__query
 
     @property
     def request_pool(self):
@@ -125,7 +134,7 @@ class App():
             result = [[res.result() for res in lst] for lst in result]
         else:
             result = [res.result() for res in result]
-        
+    
         return result
 
 
@@ -180,6 +189,7 @@ class BaseObject(ABC):
                     raise TypeError(f"All MATCH KEYS must be of type {str.__class__}.")
                 if not all(isinstance(k, list) for k in match_dict.values()):
                     raise TypeError(f"All MATCH VALUES must be of type {list.__class__}.")
+                
                 values = []
                 for lst in itertools.chain(match_dict.values()):
                     values.extend(lst)
@@ -234,21 +244,28 @@ class BaseObject(ABC):
     def _build_url(self, body: str) -> str:
         return f'https://api.trello.com/1/{body}'
 
-    def _request(self, method: str, id: str = '', body: str = '', query: dict = None, **params):
-        if id != '': 
+    def _request(self, method: str, id: str = '', body: str = '', alt_prefix: str = None, query: dict = None, **params):
+        slash = ''
+        if id != '':
             slash = '/'
+        
+        if alt_prefix == None:
+            prefix = self.__prefix
+        else:
+            prefix = alt_prefix
 
-        url = self._build_url(f'{self.__prefix}/{id}{slash}{body}')
+        url = self._build_url(f'{prefix}/{id}{slash}{body}')
 
-        if not query: 
+
+        if query == None: 
             query = self.app.query
         else:
             query.update(self.app.query)
 
         if params:
             query.update(params)
-        
-        response = rq.request(method, url, params=query)
+
+        response = rq.request(method, url, headers=self.app.headers, params=query)
 
         if response.status_code != 200:
             raise APIError(response)
@@ -269,8 +286,8 @@ class BaseObject(ABC):
             print(json.dumps(obj, indent=4, sort_keys=False))
 
     # SCRIPT METHODS #######################################################
-    def set_children(self):
-        """Fully setup all objects belonging to the layer hierarchically below this object.
+    def set_family(self):
+        """Fully setup  self and all objects belonging to the layer hierarchically below this object.
         Example: when called from a Board object, this method will setup all lists belonging to
         that board."""
 
@@ -355,6 +372,32 @@ class List(BaseObject):
         return self.__cards
 
 
+    def get_cards(self):
+        """Acquire Cards from a board or list in Trello."""
+        response = self._request('GET', self.id, 'cards')
+        self.__cards = [Card(self.app, json['id']) for json in response.json()]
+        return response
+
+    def create_card(self, title: str, description: str = '', start_date: str = '', due_date: str = '', pos: str = 'bottom'):
+        """Create a card in a list."""
+        query = {'idList':  self.id,
+                 'name':    title, 
+                 'desc':    description,
+                 'start':   start_date,
+                 'due':     due_date,
+                 'pos':     pos}
+
+        response = self._request('POST', alt_prefix='cards', query=query)
+
+        #####
+        card_id = response.json()['id']
+
+        self.__cards.append(Card(self.app, card_id))
+        #####
+
+        return response
+
+
 class Card(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'cards')
@@ -375,3 +418,27 @@ class Checklist(BaseObject):
     @property
     def checkitems(self):
         return self.__checkitems
+
+key = '637c56e248984ec499c0361ccb63f695'
+token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
+brd_id = '62221524f3b7441300da7a88'
+
+start = time.perf_counter()
+
+app = App(key, token, api_interval=0.0)
+brd = Board(app, brd_id)
+
+brd.set_family()
+brd.lists[0].get_cards()
+for i in range(1, 10):
+    app.queue(brd.lists[0].create_card, f'Card {i}', pos=f'{i}')
+app.execute()
+brd.set_family()
+
+brd.get_cards()
+print(brd.cards)
+print()
+print(brd.lists[0].cards)
+
+end = time.perf_counter()
+print(f'{end-start:.4f} seconds')
