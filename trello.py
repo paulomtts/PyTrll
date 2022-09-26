@@ -386,22 +386,3 @@ class Checklist(BaseObject):
     def checkitems(self):
         return self.__checkitems
 
-key = '637c56e248984ec499c0361ccb63f695'
-token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
-brd_id = '62221524f3b7441300da7a88'
-
-
-app = App(key, token, api_interval=0.0)
-brd = Board(app, brd_id)
-
-brd.set_family()
-brd.lists[0].get_cards()
-
-start = time.perf_counter()
-for i in range(1, 101):
-    app.queue('cards', brd.lists[0].create_card, f'Card {i}', pos=f'{i}')
-app.execute('cards')
-end = time.perf_counter()
-brd.set_family()
-
-print(f'{end-start:.4f} seconds')
