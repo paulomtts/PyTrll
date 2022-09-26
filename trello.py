@@ -1,5 +1,6 @@
 from concurrent.futures import ThreadPoolExecutor
 from abc import ABC, abstractmethod
+from random import randint
 
 import requests as rq
 import itertools
@@ -111,29 +112,28 @@ class BaseObject(ABC):
     @abstractmethod
     def __init__(self, app: App, id: str, prefix: str):   
         self.__app          :App       = app
+        self.__prefix       :str       = prefix
 
         self.__id           :str       = id
         self.__json         :json      = None
-        self.__prefix       :str       = prefix
 
 
     def __getitem__(self, *tup: str):
         """Contains search mechanisms."""
+        args = tup[0]
 
         # Single arguments ##############
         if not isinstance(tup[0], tuple):
             
-            arg = tup[0]
-            if not isinstance(arg, (list, str)):
+            if not isinstance(args, (list, str)):
                 raise TypeError(f"Single arguments can only be {str.__class__} or {list.__class__}.")
-
             # Single string: [str] -> str
-            if isinstance(arg, str):
-                return self.json[arg]
+            if isinstance(args, str):
+                return self.json[args]
 
             # List of JSONs: [list] -> list[json, ...]
-            elif isinstance(arg, list) and all(isinstance(key, (Board, List, Card)) for key in arg[1:]):
-                return [obj.json for obj in arg]
+            elif isinstance(args, list) and all(isinstance(key, (Board, List, Card)) for key in args[1:]):
+                return [obj.json for obj in args]
         
         # Multiple arguments ############
         else:
@@ -142,14 +142,14 @@ class BaseObject(ABC):
             if all(isinstance(el, str) for el in tup[0]):
                 return json.dumps({key: self.json[key] for key in tup[0]})
 
-            container: list = tup[0][0]
+            container: list = args[0]
             if not isinstance(container, (list, dict, json)):
                 raise TypeError(f"Expected {list.__class__} for CONTAINER, but got {container.__class__}")
             if isinstance(container, list) and not all(isinstance(cont, (List, Card, Checklist)) for cont in container):
                 raise TypeError(f"All ITEMS in a container must be of type {List.__class__}, {Card.__class__} or {Checklist.__class__}.")            
             
             
-            match_dict: dict = tup[0][1]
+            match_dict: dict = args[1]
             if isinstance(match_dict, dict):
                 pos = 2
                 if not all(isinstance(k, str) for k in match_dict.keys()):
@@ -167,7 +167,7 @@ class BaseObject(ABC):
                 match_dict = {}
             
 
-            keys: list = [el for el in tup[0][pos:]]
+            keys: list = [el for el in args[pos:]]
             if not all(isinstance(k, str) for k in keys):
                 raise TypeError(f'All KEYS must be of type {str.__class__}.')
 
@@ -212,6 +212,8 @@ class BaseObject(ABC):
         return f'https://api.trello.com/1/{body}'
 
     def _request(self, method: str, id: str = '', body: str = '', alt_prefix: str = None, query: dict = None, **params):
+        """URL: ({prefix} | {alt_prefix}) /\t({body} | {id}/{body})\t/"""
+
         slash = ''
         if id != '':
             slash = '/'
@@ -255,34 +257,38 @@ class BaseObject(ABC):
     # SCRIPT METHODS #######################################################
     def set_family(self):
         """Fully setup  self and all objects belonging to the layer hierarchically below this object.
-        Example: when called from a Board object, this method will setup all lists belonging to
+        Example: when called from a Board object, this method will setup self and all lists belonging to
         that board."""
+
+        num = randint(1000, 10000)
+        if f'{self.id}_family' in self.app.request_pool.keys():
+            raise ValueError(f'{self.id}__family__{num} is an invalid key for the queue. Please remove it from the queue before executing this method.')
 
         fnc_sw = {'boards': self.get_lists, 
                   'lists':  self.get_cards, 
                   'cards': self.get_checklists}
-        
-        self.app.queue('family', self.get_self)
-        self.app.queue('family', fnc_sw[self.__prefix])
-        self.app.execute('family')
 
+        self.app.queue(f'{self.id}__family__{num}', self.get_self)
+        self.app.queue(f'{self.id}__family__{num}', fnc_sw[self.__prefix])
+        self.app.execute(f'{self.id}__family__{num}')
+            
         obj_sw = {'boards': self.lists, 
                   'lists':  self.cards, 
                   'cards': self.checklists}
 
         for obj in obj_sw[self.__prefix]:
-            self.app.queue('family', obj.get_self)
-        self.app.execute('family')
+            self.app.queue(f'{self.id}__family__{num}', obj.get_self)
+        self.app.execute(f'{self.id}__family__{num}')
 
     # REQUESTS #############################################################
     def get_self(self):
-        """Acquire a JSON representing this object from Trello."""
+        """Acquire a JSON representing this object from Trello. \nURL: varies according to calling object."""
         response = self._request('GET', self.id)
         self.__json = response.json()
         return response
 
     def update_self(self, query: dict=None):
-        """Update an object in Trello."""
+        """Update an object in Trello. \nURL: varies according to calling object."""
         response = self._request('PUT', self.id, query=query)
         self.__json = response.json()
         return response
@@ -291,9 +297,9 @@ class BaseObject(ABC):
 class Board(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'boards')
-        self.__lists = None
-        self.__cards = None
-        self.__checklists = None
+        self.__lists = CustomList()
+        self.__cards = CustomList()
+        self.__checklists = CustomList()
 
     # PROPERTIES ###########################################################    
     @property
@@ -310,43 +316,43 @@ class Board(BaseObject):
     
     # REQUESTS #############################################################
     def get_lists(self):
-        """Acquire Lists from a board."""
+        """Acquire Lists from a board. \nURL: /1/boards/{id}/lists"""
         response = self._request('GET', self.id, 'lists')
-        self.__lists = [List(self.app, json['id']) for json in response.json()]
+        self.__lists = CustomList([List(self.app, json['id']) for json in response.json()])
         return response
     
     def get_cards(self):
-        """Acquire Cards from a board or list in Trello."""
+        """Acquire Cards from a board or list in Trello. \nURL: /1/boards/{id}/cards"""
         response = self._request('GET', self.id, 'cards')
-        self.__cards = [Card(self.app, json['id']) for json in response.json()]
+        self.__cards = CustomList([Card(self.app, json['id']) for json in response.json()])
         return response
 
     def get_checklists(self):
-        """Acquire Checklists from a board.."""
+        """Acquire Checklists from a board. \nURL: /1/boards/{id}/checklists"""
         response = self._request('GET', self.id, 'checklists')
-        self.__checklists = [Checklist(self.app, json['id']) for json in response.json()]
+        self.__checklists = CustomList([Checklist(self.app, json['id']) for json in response.json()])
         return response
 
 
 class List(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'lists')
-        self.__cards = None
+        self.__cards = CustomList()
 
     # PROPERTIES ###########################################################    
     @property
     def cards(self):
         return self.__cards
 
-
+    # REQUESTS #############################################################
     def get_cards(self):
-        """Acquire Cards from a board or list in Trello."""
+        """Acquire Cards from a board or list in Trello. \nURL: /1/lists/{id}/cards"""
         response = self._request('GET', self.id, 'cards')
-        self.__cards = [Card(self.app, json['id']) for json in response.json()]
+        self.__cards = CustomList([Card(self.app, json['id']) for json in response.json()])
         return response
 
-    def create_card(self, title: str, description: str = '', start_date: str = '', due_date: str = '', pos: str = 'bottom'):
-        """Create a card in a list."""
+    def create_card(self, title: str = '', description: str = '', start_date: str = '', due_date: str = '', pos: str = ''):
+        """Create a card in a list.\nURL: /1/cards"""
         query = {'idList':  self.id,
                  'name':    title, 
                  'desc':    description,
@@ -356,11 +362,8 @@ class List(BaseObject):
 
         response = self._request('POST', alt_prefix='cards', query=query)
 
-        #####
         card_id = response.json()['id']
-
         self.__cards.append(Card(self.app, card_id))
-        #####
 
         return response
 
@@ -368,7 +371,7 @@ class List(BaseObject):
 class Card(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'cards')
-        self.__checklists = None
+        self.__checklists = CustomList()
 
     # PROPERTIES ###########################################################    
     @property
@@ -379,10 +382,94 @@ class Card(BaseObject):
 class Checklist(BaseObject):
     def __init__(self, app: App, id: str):
         super().__init__(app, id, 'checklists')
-        self.__checkitems = None
+        self.__checkitems = CustomList()
 
     # PROPERTIES ###########################################################    
     @property
     def checkitems(self):
         return self.__checkitems
+
+class CustomList():
+    """A custom list for the Trello objects. Facilitates __getitem__ syntax in
+    other classes."""
+
+    types = [Board, List, Card, Checklist]
+    
+    def __init__(self, data: list = None) -> None:
+        if data is None:
+            data = []
+        elif not all(type(obj) in self.types for obj in data):
+            raise TypeError(f'Can only accept objects of the following types: {self.types!r}')
+
+        self.__data = data
+
+    def __repr__(self):
+        return repr(self.__data)
+
+    def __getitem__(self, entry):
+        if isinstance(entry, int):
+            return self.__data[entry]
+        
+        elif isinstance(entry, str):
+            return tuple(obj.json[entry] for obj in self.__data)
+        
+        elif isinstance(entry, dict):
+            results = []
+
+            for obj in self.__data:
+                appnd = True
+                for key, values in entry.items():
+                    if obj.json[key] not in values:
+                        appnd = False
+                if appnd:
+                    results.append(obj.json)
+
+            return results
+        
+        elif isinstance(entry, tuple):
+            
+            if all(isinstance(obj, str) for obj in entry):
+                return [tuple(obj.json[item] for item in entry) for obj in self.__data]
+            
+            elif isinstance(entry[0], dict) and all(isinstance(obj, str) for obj in entry[1:]):
+                
+                results = []
+
+                for obj in self.__data:
+                    appnd = True
+                    for key, values in entry[0].items():
+                        if obj.json[key] not in values:
+                            appnd = False
+                    if appnd:
+                        results.append(obj.json)
+
+                return [{key:val for key, val in obj.items() if key in entry[1:]} for obj in results]
+            else:
+                raise TypeError("Incorrect mix of types.")
+
+    def __setitem__(self, entry, val):
+        if type(entry) is int:
+            if type(val) in self.types:
+                self.__data[entry] = val
+        else:
+            raise TypeError("Entry must be an integer.")
+
+    def __delitem__(self, item):
+        del self.__data[item]
+
+    # METHODS ##############################################################
+    def insert(self, index, val):
+        if type(val) in self.types:
+            self.__data.insert(index, val)
+        else:
+            raise TypeError(f'Cannot insert {type(val)} object.')
+
+    def append(self, val):
+        if type(val) in self.types:
+            self.insert(len(self.__data), val)
+        else:
+            raise TypeError(f'Cannot insert {type(val)} object.')
+    
+    def pop(self, index):
+        return self.__data.pop(index)
 
