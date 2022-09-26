@@ -31,28 +31,24 @@ class APIError(Exception):
 class App():
     """Hold the query dictionary and handle concurrent requests."""
 
-    def __init__(self, key: str, token: str, threads: int = None, chunk_size: int = None, api_interval: float = 0.5) -> None:
+    def __init__(self, key: str, token: str, threads: int = None, chunk_size: int = 30, api_interval: float = 0.5) -> None:
         super().__init__()
         self.__headers          :dict   = {"Accept": "application/json"}
         self.__query            :dict   = {'key'     : key,
                                            'token'   : token}
-        self.__request_pool     :list   = [[],]
-        self.__current_pool     :int    = 0
+        self.__request_pool     :dict   = {}
+        self.__threads          :int    = os.cpu_count() + 4
         self.__chunk_size       :int    = chunk_size
         self.__api_interval     :float  = api_interval
 
         if threads != None:
-            self.threads = threads
-        else:
-            self.threads = os.cpu_count() + 4
+            self.__threads = threads
 
         if chunk_size != None:
             self.__chunk_size = chunk_size
-        else:
-            self.__chunk_size = 10
 
     def __repr__(self) -> str:
-        return f'{self.__class__.__name__}(chunk_size={self.__chunk_size!r}, current_pool={self.__current_pool!r}, pool_lst={self.__request_pool!r})'
+        return f'{self.__class__.__name__}(pools={self.__request_pool!r}, chunk_size={self.__chunk_size!r})'
 
     @property
     def headers(self):
@@ -67,10 +63,6 @@ class App():
         return self.__request_pool
 
     @property
-    def current_pool(self):
-        return self.__current_pool
-
-    @property
     def chunk_size(self):
         return self.__chunk_size
 
@@ -79,63 +71,38 @@ class App():
         return self.__api_interval
 
     # METHODS ##############################################################   
-    def queue(self, func, *args, **kwargs):
-        """Queue function to be executed concurrently. Queues have a maximum size,
-        and whenever a limit is reached, a new chunk will be created."""
+    def queue(self, key: str, func, *args, **kwargs):
+        """Queue function to be executed concurrently. Functions are stored in
+        a list within a dictionary key."""
 
         if args == None: args = []
         if kwargs == None: kwargs = {}
+        if self.__request_pool.get(key, None) is None:
+            self.__request_pool[key] = []
 
-        if len(self.__request_pool) == 0:
-            self.__request_pool.append([])
+        self.__request_pool[key].append((func, args, kwargs))
 
-        if len(self.__request_pool[self.__current_pool]) == self.__chunk_size:
-            self.__request_pool.append([])
-            self.__current_pool += 1
+    def execute(self, key: str):
+        """Concurrently execute functions in a queue. Execution will be done in
+        chunks, but returned as a list of responses, sorted by queueing order."""
 
-        self.__request_pool[self.__current_pool].append((func, args, kwargs))
+        def split(lst, chunk_size):
+            for i in range(0, len(lst), chunk_size):
+                yield lst[i:(i + chunk_size)]
 
-    def execute(self, pool_number: int = None):
-        """Concurrently execute functions in the queue. If a pool number is provided,
-        will execute only the functions in that pool, otherwise it will execute all
-        functions in all pools."""
+        pool_lst = list(split(self.__request_pool[key], self.__chunk_size))
+        response_lst = []
 
-        if pool_number is None:
-            response_lake = []
-            
-            for pool in self.__request_pool:
-                response_lst = []
-                
-                with ThreadPoolExecutor(self.threads) as executor:
-                    for (fn, args, kwargs) in pool:
-                        response_lst.append(executor.submit(fn, *args, **kwargs))
-                    response_lake.append(response_lst)
-                    executor
-                time.sleep(self.api_interval)
-            
-            self.__request_pool = []
-            self.__current_pool = 0
-            
-            result = response_lake
-
-        else:
-            with ThreadPoolExecutor(self.threads) as executor:
-                response_lst = []
-
-                for (fn, args, kwargs) in self.__request_pool[pool_number]:
+        for pool in pool_lst:
+            with ThreadPoolExecutor(self.__threads) as executor:
+                for (fn, args, kwargs) in pool:
                     response_lst.append(executor.submit(fn, *args, **kwargs))
-                
-                self.__request_pool.pop(pool_number)
-                self.__current_pool = len(self.__request_pool)-1
-                
-            result = response_lst
-           
-        if all(isinstance(obj, list) for obj in result):
-            result = [[res.result() for res in lst] for lst in result]
-        else:
-            result = [res.result() for res in result]
-    
-        return result
+            
+            time.sleep(self.__api_interval)
+        
+        self.__request_pool.pop(key)
+            
+        return [response.result() for response in response_lst]
 
 
 class BaseObject(ABC):
@@ -295,17 +262,17 @@ class BaseObject(ABC):
                   'lists':  self.get_cards, 
                   'cards': self.get_checklists}
         
-        self.app.queue(self.get_self)
-        self.app.queue(fnc_sw[self.__prefix])
-        self.app.execute()
+        self.app.queue('family', self.get_self)
+        self.app.queue('family', fnc_sw[self.__prefix])
+        self.app.execute('family')
 
         obj_sw = {'boards': self.lists, 
                   'lists':  self.cards, 
                   'cards': self.checklists}
 
         for obj in obj_sw[self.__prefix]:
-            self.app.queue(obj.get_self)
-        self.app.execute()
+            self.app.queue('family', obj.get_self)
+        self.app.execute('family')
 
     # REQUESTS #############################################################
     def get_self(self):
@@ -423,22 +390,18 @@ key = '637c56e248984ec499c0361ccb63f695'
 token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
 brd_id = '62221524f3b7441300da7a88'
 
-start = time.perf_counter()
 
 app = App(key, token, api_interval=0.0)
 brd = Board(app, brd_id)
 
 brd.set_family()
 brd.lists[0].get_cards()
-for i in range(1, 10):
-    app.queue(brd.lists[0].create_card, f'Card {i}', pos=f'{i}')
-app.execute()
+
+start = time.perf_counter()
+for i in range(1, 101):
+    app.queue('cards', brd.lists[0].create_card, f'Card {i}', pos=f'{i}')
+app.execute('cards')
+end = time.perf_counter()
 brd.set_family()
 
-brd.get_cards()
-print(brd.cards)
-print()
-print(brd.lists[0].cards)
-
-end = time.perf_counter()
 print(f'{end-start:.4f} seconds')
