@@ -5,6 +5,7 @@ Main Developer: Paulo Mattos
 ### NEXT UPDATES
 - [ ] Add the Checkitem class
 - [ ] Create various requests for all existing classes
+- [x] Bracket-syntax rework
 
 ## GOAL
 The goal of this module is NOT to precisely reflect Trello's API, but rather to provide a
@@ -75,18 +76,18 @@ app.execute()
 # [str] -> str
 brd['name']
 
-# [str, ...] -> json{str: val, str: val, ...}
+# [str, str, ...] -> json{str: val, str: val, ...}
 brd['name', 'id']
 
-# [list] -> list[json, ...]
+# [list_like_attribute] -> list[json, ...]
 brd[brd.lists]
 
-# [list, str, ...] -> list[json, ...]
-brd[brd.lists, 'name', 'id'] 
+# [str, ...] -> list[(val, val), (val, val), ...]
+brd.lists['name', 'id'] 
 
-# [list, (str, str)]   |   [list, (str, [str, ...])] -> list[json, ...]
-brd[brd.lists, {'name': ['sample_name0', 'sample_name1']}]
+# [{key: [val, val, ...]}] -> list[json, ...]
+brd.lists[{'name': ['sample_name0', 'sample_name1']}]
 
-# [list, (str, str), str, ...]   |   [list, (str, [str, ...]), str, ...] -> list[json, ...]
-brd[brd.lists, {'name': ['sample_name0', 'sample_name1']}, 'name', 'id']
+# [{key: [val, val, ...]}, str, str] -> list[{key: val, ...}, ...]
+brd.lists[{'name': ['sample_name0', 'sample_name1']}, 'name', 'id']
 ```
