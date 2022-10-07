@@ -42,7 +42,7 @@ class App():
         self.__chunk_size       :int        = chunk_size
         self.__api_interval     :float      = api_interval
 
-        self.__boards = CustomList()
+        self.__boards = ModifiedList()
 
         if threads != None:
             self.__threads = threads
@@ -109,6 +109,7 @@ class App():
                 'get_lists':              'boards/{id}/lists',
                 'get_cards':              'boards/{id}/cards',
                 'get_checklists':         'boards/{id}/checklists',
+                'get_custom_fields':      'boards/{id}/customFields',
 
                 'create_list':            'boards/{id}/lists',
             },
@@ -122,6 +123,9 @@ class App():
 
             'Card':{
                 'get_checklists':         'cards/{id}/checklists',
+                'get_attachments':        'cards/{id}/attachments',
+                'get_custom_field_items': 'cards/{id}/customFieldItems',
+
 
                 'create_checklist':       'cards/{id}/checklists',
                 'delete_checklist':       'cards/{id}/checklists/{idChecklist}',
@@ -139,15 +143,48 @@ class App():
 
             'Checkitem':{
                 'get_self':               'checklists/{id}/checkItems/{idCheckItem}',
-                'update_self':            'cards/{id}/checkItem/{idCheckItem}'
-            }
+                'update_self':            'cards/{id}/checkItem/{idCheckItem}',
+            },
+            
+            'CustomFieldItem':{
+                'update_self':            'cards/{idCard}/customField/{idCustomField}/item',
+            },
         }
 
         body = switch[class_name][function_name].format(**kwargs)
         return f'https://api.trello.com/1/{body}'
+    
+    # SCRIPT METHODS #######################################################
+    def set_family(self, obj):
+        """Fully setup  self and all objects belonging to the layer hierarchically below this object.
+        Example: when called from a Board object, this method will setup self and all lists belonging to
+        that board."""
+
+        if f'{obj.id}__family__' in self.request_pool.keys():
+            raise ValueError(f'\'{obj.id}__family__\' is a reserved keyword. Please remove it from the queue before executing this method.')
+
+        fnc_sw = {'boards':     obj.get_lists, 
+                  'lists':      obj.get_cards, 
+                  'cards':      obj.get_checklists,}
+                #   'checklists': self.get_checkitems}
+
+        self.queue(f'{obj.id}__family__', obj.get_self)
+        self.queue(f'{obj.id}__family__', fnc_sw[obj.trello_class])
         
+        self.execute(f'{obj.id}__family__')
+            
+        obj_sw = {'boards':     obj.lists, 
+                  'lists':      obj.cards, 
+                  'cards':      obj.checklists,}
+                #   'checklists': self.checkitems}
+
+        for obj in obj_sw[obj.trello_class]:
+            self.queue(f'{obj.id}__family__', obj.get_self)
+        
+        self.execute(f'{obj.id}__family__')
+
     # METHODS ##############################################################   
-    def request(self, method: str, params: dict = None, cls: str = '', wildcard: str = '', **kwargs: dict):
+    def request(self, method: str, params: dict = None, payload: dict = None, cls: str = '', wildcard: str = '', **kwargs: dict):
         """Perform a request.
         
         - method: request type.
@@ -166,10 +203,15 @@ class App():
             params.update(self.query)
         else:
             params = self.query
+        
+        if payload:
+            payload.update(self.query)
+        else:
+            payload = {}
 
         url = self._build_url(class_name, function_name, wildcard=wildcard, **kwargs)
 
-        response = rq.request(method, url, headers=self.headers, params=params)
+        response = rq.request(method, url, headers=self.headers, params=params, json=payload)
 
         if response.status_code != 200:
             raise APIError(response)
@@ -211,12 +253,10 @@ class App():
     # REQUESTS #############################################################
     def get_boards(self):
         """Populate the list of boards for this Trello user."""
-        response = rq.request('GET', 'https://api.trello.com/1/members/me/boards/all', 
-                              headers=self.headers,
-                              params=self.query)
+        response = self.request('GET')
 
         if response.status_code == 200:
-            self.__boards = CustomList([Board(self, json) for json in response.json()])
+            self.__boards = ModifiedList([Board(self, json) for json in response.json()])
 
         return response
 
@@ -224,9 +264,7 @@ class App():
         """Create a board in this Trello user."""
         params = {'name': name}.update(self.query)
 
-        response = rq.request('POST', 'https://api.trello.com/1/boards', 
-                              headers=self.headers,
-                              params=params)
+        response = self.request('POST', params=params)
 
         if response.status_code == 200:
             self.__boards.append(Board(self, response.json()))
@@ -235,9 +273,7 @@ class App():
     
     def delete_board(self, board_id: str):
         """Delete a board in this Trello user."""
-        response = rq.request('DELETE', f'https://api.trello.com/1/boards/{board_id}', 
-                              headers=self.headers,
-                              params=self.query)
+        response = self.request('DELETE', id=board_id)
 
         if response.status_code == 200:
             for idx, brd in enumerate(self.__boards):
@@ -252,9 +288,9 @@ class BaseObject(ABC):
     """A generic blueprint for Trello objects."""
     
     @abstractmethod
-    def __init__(self, app: App, js: dict, prefix: str):
+    def __init__(self, app: App, js: dict, trello_class: str):
         self.__app          :App       = app
-        self.__prefix       :str       = prefix
+        self.__trello_class :str       = trello_class
 
         self.__json         :json      = js
         self.__id           :str       = js['id']
@@ -265,7 +301,7 @@ class BaseObject(ABC):
 
         if isinstance(args, str):
             return self.json[args]
-        elif isinstance(args, CustomList):
+        elif isinstance(args, ModifiedList):
             return [arg.json for arg in args]
         elif isinstance(args, tuple):
             if all(isinstance(arg, str) for arg in args):
@@ -287,6 +323,10 @@ class BaseObject(ABC):
     @property
     def app(self):
         return self.__app
+
+    @property
+    def trello_class(self):
+        return self.__trello_class
    
     # METHODS ##############################################################   
     def dump(self, js = None):
@@ -301,37 +341,10 @@ class BaseObject(ABC):
         for obj in js:
             print(json.dumps(obj, indent=4, sort_keys=False))
 
-    # SCRIPT METHODS #######################################################
-    def set_family(self):
-        """Fully setup  self and all objects belonging to the layer hierarchically below this object.
-        Example: when called from a Board object, this method will setup self and all lists belonging to
-        that board."""
-
-        if f'{self.id}__family__' in self.app.request_pool.keys():
-            raise ValueError(f'\'{self.id}__family__\' is a reserved keyword. Please remove it from the queue before executing this method.')
-
-        fnc_sw = {'boards':     self.get_lists, 
-                  'lists':      self.get_cards, 
-                  'cards':      self.get_checklists,}
-                #   'checklists': self.get_checkitems}
-
-        self.app.queue(f'{self.id}__family__', self.get_self)
-        self.app.queue(f'{self.id}__family__', fnc_sw[self.__prefix])
-        self.app.execute(f'{self.id}__family__')
-            
-        obj_sw = {'boards':     self.lists, 
-                  'lists':      self.cards, 
-                  'cards':      self.checklists,}
-                #   'checklists': self.checkitems}
-
-        for obj in obj_sw[self.__prefix]:
-            self.app.queue(f'{self.id}__family__', obj.get_self)
-        self.app.execute(f'{self.id}__family__')
-
     # REQUESTS #############################################################
     def get_self(self):
         """Acquire a JSON representing this object from Trello. \nURL: varies according to calling object."""
-        response = self.app.request('GET', cls='BaseObject', wildcard=self.__prefix, id=self.id)
+        response = self.app.request('GET', cls='BaseObject', wildcard=self.__trello_class, id=self.id)
         
         if response.status_code == 200:
             self.__json = response.json()
@@ -340,7 +353,7 @@ class BaseObject(ABC):
 
     def update_self(self, params: dict=None):
         """Update an object in Trello. \nURL: varies according to calling object."""
-        response = self.app.request('PUT', params=params, cls='BaseObject', wildcard=self.__prefix, id=self.id)
+        response = self.app.request('PUT', params=params, cls='BaseObject', wildcard=self.__trello_class, id=self.id)
         
         if response.status_code == 200:
             self.__json = response.json()
@@ -351,9 +364,10 @@ class BaseObject(ABC):
 class Board(BaseObject):
     def __init__(self, app: App, json: dict):
         super().__init__(app, json, 'boards')
-        self.__lists = CustomList()
-        self.__cards = CustomList()
-        self.__checklists = CustomList()
+        self.__lists = ModifiedList()
+        self.__cards = ModifiedList()
+        self.__checklists = ModifiedList()
+        self.__custom_fields = ModifiedList()
 
     # PROPERTIES ###########################################################    
     @property
@@ -367,6 +381,10 @@ class Board(BaseObject):
     @property
     def checklists(self):
         return self.__checklists
+
+    @property
+    def custom_fields(self):
+        return self.__custom_fields
     
     # REQUESTS #############################################################
     def get_lists(self):
@@ -374,7 +392,7 @@ class Board(BaseObject):
         response = self.app.request('GET', id=self.id)
         
         if response.status_code == 200:
-            self.__lists = CustomList([List(self.app, json) for json in response.json()])
+            self.__lists = ModifiedList([List(self.app, json) for json in response.json()])
         
         return response
     
@@ -383,7 +401,7 @@ class Board(BaseObject):
         response = self.app.request('GET', id=self.id)
         
         if response.status_code == 200:
-            self.__cards = CustomList([Card(self.app, json) for json in response.json()])
+            self.__cards = ModifiedList([Card(self.app, json) for json in response.json()])
         
         return response
 
@@ -392,9 +410,17 @@ class Board(BaseObject):
         response = self.app.request('GET', id=self.id)
         
         if response.status_code == 200:
-            self.__checklists = CustomList([Checklist(self.app, json) for json in response.json()])
+            self.__checklists = ModifiedList([Checklist(self.app, json) for json in response.json()])
         
         return response
+
+    def get_custom_fields(self):
+        response = self.app.request('GET', id=self.id)
+        
+        if response.status_code == 200:
+            self.__custom_fields = ModifiedList([CustomField(self.app, json) for json in response.json()])
+        
+        return response        
 
     def create_list(self, name: str, pos: str = 'bottom'):
         """Create a list in a board.\nURL: /1/boards/{id}/lists"""
@@ -411,7 +437,7 @@ class Board(BaseObject):
 class List(BaseObject):
     def __init__(self, app: App, json: dict):
         super().__init__(app, json, 'lists')
-        self.__cards = CustomList()
+        self.__cards = ModifiedList()
 
     # PROPERTIES ###########################################################    
     @property
@@ -424,7 +450,7 @@ class List(BaseObject):
         response = self.app.request('GET', id=self.id)
 
         if response.status_code == 200:
-            self.__cards = CustomList([Card(self.app, json) for json in response.json()])
+            self.__cards = ModifiedList([Card(self.app, json) for json in response.json()])
 
         return response
 
@@ -460,8 +486,9 @@ class List(BaseObject):
 class Card(BaseObject):
     def __init__(self, app: App, json: dict):
         super().__init__(app, json, 'cards')
-        self.__checklists = CustomList()
-        self.__attachments = CustomList()
+        self.__checklists = ModifiedList()
+        self.__attachments = ModifiedList()
+        self.__custom_field_items = ModifiedList()
 
     # PROPERTIES ###########################################################
     @property
@@ -471,6 +498,10 @@ class Card(BaseObject):
     @property
     def attachments(self):
         return self.__attachments
+    
+    @property
+    def custom_field_items(self):
+        return self.__custom_field_items
 
     # REQUESTS #############################################################
     def get_checklists(self):
@@ -478,9 +509,9 @@ class Card(BaseObject):
         response = self.app.request('GET', id=self.id)
         
         if response.status_code == 200:
-            self.__checklists = CustomList([Checklist(self.app, json) for json in response.json()])
+            self.__checklists = ModifiedList([Checklist(self.app, json) for json in response.json()])
 
-        return response
+        return response   
 
     def create_checklist(self, title: str, pos: str = 'bottom'):
         """Add a checklist to a card."""
@@ -507,15 +538,26 @@ class Card(BaseObject):
 
         return response
 
-    def create_attachment(self, name: str, url: str):
-        """Create an attachment in a card."""
-        
-        #############
-        # Needs to be reworked to include other arguments of the endpoint
-        #############
+    def get_attachments(self):
+        """Get all attachments in a card."""
+        response = self.app.request('GET', id=self.id)
+    
+        if response.status_code == 200:
+            self.__attachments = ModifiedList([Attachment(self.app, json) for json in response.json()])
 
+        return response     
+
+    def create_attachment(self, name: str, url: str = '', file: str = '', 
+                          mime_type: str = '', set_cover: bool = 'false'):
+        """Create an attachment in a card.
+        
+        - file: in binary format."""
+        
         params = {'name': name,
-                  'url':  url}
+                  'url':  url,
+                  'file': file,
+                  'mimeType': mime_type,
+                  'setCover': set_cover}
         
         response = self.app.request('POST', params=params, id=self.id)
 
@@ -536,12 +578,19 @@ class Card(BaseObject):
         
         return response
 
+    def get_custom_field_items(self):
+        """Get all custom field in a card."""
+        response = self.app.request('GET', id=self.id)
+    
+        if response.status_code == 200:
+            self.__custom_field_items = ModifiedList([CustomFieldItem(self.app, json) for json in response.json()])
 
+        return response    
 
 class Checklist(BaseObject):
     def __init__(self, app: App, json: dict):
         super().__init__(app, json, 'checklists')
-        self.__checkitems = CustomList()
+        self.__checkitems = ModifiedList()
 
     # PROPERTIES ###########################################################    
     @property
@@ -554,7 +603,7 @@ class Checklist(BaseObject):
         response = self.app.request('GET', id=self.id)
         
         if response.status_code == 200:
-            self.__checkitems = CustomList([Checkitem(self.app, json) for json in response.json()])
+            self.__checkitems = ModifiedList([Checkitem(self.app, json) for json in response.json()])
 
         return response
 
@@ -609,25 +658,54 @@ class Checkitem(BaseObject):
             self._BaseObject__json = response.json()
         
         return response
-    
-    def set_family(self):
-        pass
-
 
 class CustomField(BaseObject):
     def __init__(self, app: App, js: dict):
         super().__init__(app, js, 'customFields')
 
-        self.__value = None
+class CustomFieldItem(BaseObject):
+    def __init__(self, app: App, js: dict):
+        super().__init__(app, js, 'customFieldItems')
+
+        var_kind, var_val = list(js['value'].items())[0]
+
+        self.__kind  = var_kind
+        self.__value = var_val
     
     # PROPERTIES ###########################################################    
     @property
     def value(self):
         return self.__value
 
+    @property
+    def kind(self):
+        return self.__kind
+
     # REQUESTS #############################################################
-    def set_family(self):
-        pass
+    def update_self(self, board: Board, card_id: str, field_name: str, text: str = '', 
+                    number: str = '', date: str = '', checked: str = '', params: dict = None):
+        """Update a custom field in Trello. Each field can only hold a single value,
+        therefore passing multiple value arguments will result in an API Error."""
+        
+        payload = {
+            'value':{
+                'text': text,
+                'checked': checked,
+                'date': date,
+                'number': number
+            }
+        }
+        
+        payload = {'value': {key:val for key, val in payload['value'].items() if val != ''}}
+        
+        field_id = board.custom_fields[{'name': [field_name]}, 'id'][0]['id']
+
+        response = self.app.request('PUT', params=params, payload=payload, idCard=card_id, idCustomField=field_id)
+        
+        if response.status_code == 200:
+            self._BaseObject__json = response.json()
+        
+        return response
 
 
 class Attachment(BaseObject):
@@ -635,11 +713,11 @@ class Attachment(BaseObject):
         super().__init__(app, js, 'attachments')
 
 
-class CustomList(list):
+class ModifiedList(list):
     """A custom list for the Trello objects. Facilitates __getitem__ syntax in
     other classes."""
 
-    types = [Board, List, Card, Checklist]
+    types = [Board, List, Card, Checklist, Checkitem, CustomField, CustomFieldItem]
     
     def __init__(self, data: list = None) -> None:
         if data is None:
@@ -649,14 +727,14 @@ class CustomList(list):
         
         list.__init__(self, data)
         for idx, val in enumerate(data):
-            super(CustomList, self).__setitem__(idx, val)
+            super(ModifiedList, self).__setitem__(idx, val)
 
     def __getitem__(self, entry):
         if isinstance(entry, int):
-            return super(CustomList, self).__getitem__(entry)
+            return super(ModifiedList, self).__getitem__(entry)
         
         elif isinstance(entry, slice):
-            return super(CustomList, self).__getitem__(entry)
+            return super(ModifiedList, self).__getitem__(entry)
 
         elif isinstance(entry, str):
             return tuple(obj.json[entry] for obj in self)
@@ -708,20 +786,32 @@ class CustomList(list):
                 raise TypeError("Incorrect mix of types. Provide a dictionary followed by strings.")
 
 
-key = '637c56e248984ec499c0361ccb63f695'
-token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
-brd_id = '62221524f3b7441300da7a88'
-brd_name = 'Agendas (Novo)'
+crd: Card; fld_item: CustomFieldItem
 
 
 start = time.perf_counter()
 
 app = App(key, token, api_interval=0.0)
+
 app.get_boards()
 
+
 brd = app['Agendas (Novo)']
-brd.set_family()
-brd.get_cards()
+
+app.queue('setup', brd.get_cards)
+app.queue('setup', brd.get_custom_fields)
+app.execute('setup')
+
+crd = brd.cards[0]
+
+crd.get_custom_field_items()
+
+fld_item = crd.custom_field_items[-1]
+fld_item.update_self(brd, crd.id, 'Dia', number='1')
+
+for fld_item in crd.custom_field_items:
+    print(fld_item.kind, fld_item.value)
+
 
 # for i in range(1, 10):
 #     app.queue('cards', brd.lists[0].create_card, f'Card {i}', start_date='2022-01-01', due_date='2022-12-31', pos=f'{i}')
