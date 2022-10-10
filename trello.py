@@ -327,7 +327,7 @@ class BaseObject(ABC):
     @property
     def trello_class(self):
         return self.__trello_class
-   
+
     # METHODS ##############################################################   
     def dump(self, js = None):
         """Pretty print a json."""
@@ -434,6 +434,7 @@ class Board(BaseObject):
 
         return response
 
+
 class List(BaseObject):
     def __init__(self, app: App, json: dict):
         super().__init__(app, json, 'lists')
@@ -502,6 +503,15 @@ class Card(BaseObject):
     @property
     def custom_field_items(self):
         return self.__custom_field_items
+
+    # METHODS ##############################################################
+    def build_custom_field_items(self, board: Board):
+        """Create empty custom field objects in a card."""
+        
+        self.__custom_field_items = ModifiedList([CustomFieldItem(self.app, {
+            'id': '', 
+            'idCustomField': cf.json['id'],
+        }, cf.json['name'], self.id) for cf in board.custom_fields])
 
     # REQUESTS #############################################################
     def get_checklists(self):
@@ -578,14 +588,6 @@ class Card(BaseObject):
         
         return response
 
-    def get_custom_field_items(self):
-        """Get all custom field in a card."""
-        response = self.app.request('GET', id=self.id)
-    
-        if response.status_code == 200:
-            self.__custom_field_items = ModifiedList([CustomFieldItem(self.app, json) for json in response.json()])
-
-        return response    
 
 class Checklist(BaseObject):
     def __init__(self, app: App, json: dict):
@@ -659,51 +661,60 @@ class Checkitem(BaseObject):
         
         return response
 
+
 class CustomField(BaseObject):
     def __init__(self, app: App, js: dict):
         super().__init__(app, js, 'customFields')
 
+
 class CustomFieldItem(BaseObject):
-    def __init__(self, app: App, js: dict):
+    def __init__(self, app: App, js: dict, name: str, card_id: str):
         super().__init__(app, js, 'customFieldItems')
 
-        var_kind, var_val = list(js['value'].items())[0]
-
-        self.__kind  = var_kind
-        self.__value = var_val
+        self.__kind         :str       = None
+        self.__value        :str       = None
+        self.__name         :str       = name
+        self.__card_id      :str       = card_id
     
     # PROPERTIES ###########################################################    
+    @property
+    def kind(self):
+        return self.__kind
+
     @property
     def value(self):
         return self.__value
 
     @property
-    def kind(self):
-        return self.__kind
+    def name(self):
+        return self.__name
+
+    @property
+    def card_id(self):
+        return self.__card_id
 
     # REQUESTS #############################################################
-    def update_self(self, board: Board, card_id: str, field_name: str, text: str = '', 
-                    number: str = '', date: str = '', checked: str = '', params: dict = None):
+    def update_self(self, text: str ='', number: str ='', date: str='', checked: str ='', params: dict = None):
         """Update a custom field in Trello. Each field can only hold a single value,
         therefore passing multiple value arguments will result in an API Error."""
         
         payload = {
             'value':{
                 'text': text,
-                'checked': checked,
+                'number': number,
                 'date': date,
-                'number': number
+                'checked': checked,
             }
         }
         
         payload = {'value': {key:val for key, val in payload['value'].items() if val != ''}}
-        
-        field_id = board.custom_fields[{'name': [field_name]}, 'id'][0]['id']
 
-        response = self.app.request('PUT', params=params, payload=payload, idCard=card_id, idCustomField=field_id)
+        response = self.app.request('PUT', params=params, payload=payload, idCard=self.card_id, idCustomField=self.json['idCustomField'])
         
         if response.status_code == 200:
             self._BaseObject__json = response.json()
+            self.__kind = list(payload['value'].keys())[0]
+            self.__value = list(payload['value'].values())[0]
         
         return response
 
@@ -786,59 +797,55 @@ class ModifiedList(list):
                 raise TypeError("Incorrect mix of types. Provide a dictionary followed by strings.")
 
 
+key = '637c56e248984ec499c0361ccb63f695'
+token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
+brd_id = '62221524f3b7441300da7a88'
+brd_name = 'Agendas (Novo)'
 crd: Card; fld_item: CustomFieldItem
-
 
 start = time.perf_counter()
 
 app = App(key, token, api_interval=0.0)
-
 app.get_boards()
 
-
 brd = app['Agendas (Novo)']
-
-app.queue('setup', brd.get_cards)
-app.queue('setup', brd.get_custom_fields)
-app.execute('setup')
-
-crd = brd.cards[0]
-
-crd.get_custom_field_items()
-
-fld_item = crd.custom_field_items[-1]
-fld_item.update_self(brd, crd.id, 'Dia', number='1')
-
-for fld_item in crd.custom_field_items:
-    print(fld_item.kind, fld_item.value)
+brd.get_lists()
+brd.get_custom_fields()
 
 
-# for i in range(1, 10):
-#     app.queue('cards', brd.lists[0].create_card, f'Card {i}', start_date='2022-01-01', due_date='2022-12-31', pos=f'{i}')
-# app.execute('cards')
-# print(0)
+for i in range(1, 10):
+    app.queue('cards', brd.lists[0].create_card, f'Card {i}', start_date='2022-01-01', due_date='2022-12-31', pos=f'{i}')
+app.execute('cards')
+print(0)
 
-# for crd in brd.lists[0].cards:
-#     app.queue('checklists', crd.create_checklist, crd['name'])
-# app.execute('checklists')
-# print(1)
+for crd in brd.lists[0].cards:
+    app.queue('checklists', crd.create_checklist, crd['name'])
+app.execute('checklists')
+print(1)
 
-# checkitem_lst = ['abc', 'def']
-# for crd in brd.lists[0].cards:
-#     for clst in crd.checklists:
-#         for txt in checkitem_lst:
-#             app.queue('checkitems', clst.create_checkitem, txt, 'bottom')
-# app.execute('checkitems')
-# print(2)
+clst: Checklist
+checkitem_lst = ['abc', 'def']
+for crd in brd.lists[0].cards:
+    for clst in crd.checklists:
+        for txt in checkitem_lst:
+            app.queue('checkitems', clst.create_checkitem, txt, 'bottom')
+app.execute('checkitems')
+print(2)
 
-# citem: Checkitem
-# for crd in brd.lists[0].cards:
-#     for clst in crd.checklists:
-#         for citem in clst.checkitems:
-#             # citem.dump()
-#             app.queue('tick', citem.update_self, crd.id, params={'state': 'complete'})
-# app.execute('tick')
-# print(3)
+citem: Checkitem
+for crd in brd.lists[0].cards:
+    for clst in crd.checklists:
+        for citem in clst.checkitems:
+            app.queue('tick', citem.update_self, crd.id, params={'state': 'complete'})
+app.execute('tick')
+print(3)
+print(brd.custom_fields)
+for crd in brd.lists[0].cards:
+    crd.build_custom_field_items(brd)
+    fld_item = crd.custom_field_items[-1]
+    app.queue('custom_field_items', fld_item.update_self, number='5')
+app.execute('custom_field_items')
+print(4)
 
 
 # print(brd['name', 'id'])
