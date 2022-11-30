@@ -7,7 +7,6 @@ import json
 import time
 import os
 
-
 class APIError(Exception):
     """The Trello exception class."""
 
@@ -55,12 +54,14 @@ class App():
 
     def __getitem__(self, *tup: tuple):
         brd: Board
-        
         args = tup[0]
 
-        if isinstance(args, str):
+        if isinstance(args, slice):
+            key = args.start
+            val = args.stop
+
             for brd in self.__boards:
-                if brd['name'] == args:
+                if brd[key] == val:
                     return brd
 
     # PROPERTIES ###########################################################
@@ -125,7 +126,6 @@ class App():
                 'get_checklists':         'cards/{id}/checklists',
                 'get_attachments':        'cards/{id}/attachments',
                 'get_custom_field_items': 'cards/{id}/customFieldItems',
-
 
                 'create_checklist':       'cards/{id}/checklists',
                 'delete_checklist':       'cards/{id}/checklists/{idChecklist}',
@@ -210,7 +210,6 @@ class App():
             payload = {}
 
         url = self._build_url(class_name, function_name, wildcard=wildcard, **kwargs)
-
         response = rq.request(method, url, headers=self.headers, params=params, json=payload)
 
         if response.status_code != 200:
@@ -235,6 +234,9 @@ class App():
         def split(lst, chunk_size):
             for i in range(0, len(lst), chunk_size):
                 yield lst[i:(i + chunk_size)]
+
+        if self.__request_pool.get(key, None) is None:
+            return
 
         pool_lst = list(split(self.__request_pool[key], self.__chunk_size))
         response_lst = []
@@ -301,11 +303,11 @@ class BaseObject(ABC):
 
         if isinstance(args, str):
             return self.json[args]
-        elif isinstance(args, ModifiedList):
-            return [arg.json for arg in args]
         elif isinstance(args, tuple):
             if all(isinstance(arg, str) for arg in args):
                 return [self.json[arg] for arg in args]
+        elif isinstance(args, ModifiedList):
+            return [arg.json for arg in args]
         raise TypeError(f'Invalid {type(args)} argument.')
 
     def __repr__(self) -> str:
@@ -340,6 +342,9 @@ class BaseObject(ABC):
 
         for obj in js:
             print(json.dumps(obj, indent=4, sort_keys=False))
+
+    def get_child_list(self):
+        pass
 
     # REQUESTS #############################################################
     def get_self(self):
@@ -473,7 +478,7 @@ class List(BaseObject):
 
     def delete_card(self, card_id: str):
         """Delete a card."""
-        response = self.app.request('DELETE', id=self.id)
+        response = self.app.request('DELETE', id=card_id)
         
         if response.status_code == 200:
             for idx, crd in enumerate(self.__cards):
@@ -654,6 +659,7 @@ class Checkitem(BaseObject):
     def update_self(self, card_id: str, params: dict = None):
         """Update checkitem in Trello."""
 
+        print(self.json)
         response = self.app.request('PUT', params=params, id=card_id, idCheckItem=self.id)
         
         if response.status_code == 200:
@@ -728,7 +734,7 @@ class ModifiedList(list):
     """A custom list for the Trello objects. Facilitates __getitem__ syntax in
     other classes."""
 
-    types = [Board, List, Card, Checklist, Checkitem, CustomField, CustomFieldItem]
+    types = [Board, List, Card, Checklist, Checkitem, CustomField, CustomFieldItem, Attachment]
     
     def __init__(self, data: list = None) -> None:
         if data is None:
@@ -744,12 +750,27 @@ class ModifiedList(list):
         if isinstance(entry, int):
             return super(ModifiedList, self).__getitem__(entry)
         
-        elif isinstance(entry, slice):
-            return super(ModifiedList, self).__getitem__(entry)
-
         elif isinstance(entry, str):
             return tuple(obj.json[entry] for obj in self)
+
+        elif isinstance(entry, slice):
+            key = entry.start
+            val = entry.stop
+
+            if isinstance(key, int) and isinstance(val, int):
+                super.__getitem__((key, val),)
+
+
+            if not hasattr(val, '__iter__') or type(val) is str:
+                val = [val]
+            
+            result = [obj for obj in self if obj[key] in val]
+
+            if len(result) == 1: 
+                result = result[0]
         
+            return result
+
         elif isinstance(entry, dict):
             results = []
 
@@ -757,6 +778,8 @@ class ModifiedList(list):
                 appnd = True
 
                 for key, values in entry.items():
+                    if isinstance(values, str):
+                        values = [values]
                     if not isinstance(values, list):
                         raise TypeError('Keys must be associated with lists.')
 
@@ -765,8 +788,10 @@ class ModifiedList(list):
                         break
                 
                 if appnd:
-                    results.append(obj.json)
-
+                    results.append(obj)
+                    
+            if len(results) == 1:
+                return results[0]
             return results
         
         elif isinstance(entry, tuple):
@@ -774,6 +799,28 @@ class ModifiedList(list):
             if all(isinstance(obj, str) for obj in entry):
                 return [tuple(obj.json[item] for item in entry) for obj in self]
             
+            elif all(isinstance(obj, slice) for obj in entry):
+                
+                to_iterable = lambda val: val if hasattr(val, '__iter__') else [val]
+                get_object = lambda pair: pair[0] if pair[0][pair[1]] in to_iterable(pair[2]) else None
+                split_lst = lambda lst, chunk_size: (lst[i:(i+chunk_size)] for i in range(0, len(lst), chunk_size))
+
+                tup_iterator = ((obj, slc.start, slc.stop) for obj in self for slc in entry)
+                result = list(map(get_object, tup_iterator))
+
+                result = split_lst(result, len(entry))
+                result = (res for res in result if None not in res)
+
+                flat_result = []
+                for group in result:
+                    for res in group:
+                        if res not in flat_result:
+                            flat_result.append(res)
+
+                if len(flat_result) == 1:
+                    return flat_result[0]
+                return flat_result
+
             elif isinstance(entry[0], dict) and all(isinstance(obj, str) for obj in entry[1:]):
                 
                 results = []
@@ -782,6 +829,8 @@ class ModifiedList(list):
                     appnd = True
 
                     for key, values in entry[0].items():
+                        if isinstance(values, str):
+                            values = [values]
                         if not isinstance(values, list):
                             raise TypeError('Keys must be associated with lists.')
 
@@ -792,57 +841,72 @@ class ModifiedList(list):
                     if appnd:
                         results.append(obj.json)
 
-                return [{key:val for key, val in obj.items() if key in entry[1:]} for obj in results]
+                results = [{key:val for key, val in js.items() if key in entry[1:]} for js in results]
+
+                if len(results) == 1:
+                    if len(entry[1:]) == 1:
+                        return results[0][entry[-1]]
+                    return results[0]
+                return [{key:val for key, val in js.items() if key in entry[1:]} for js in results]
+
             else:
                 raise TypeError("Incorrect mix of types. Provide a dictionary followed by strings.")
 
 
+# key = '637c56e248984ec499c0361ccb63f695'
+# token = '44162f9fa00913303974d79d1151c3414ee0d9978f2e6720ebff65adf5afe3bf'
+# brd_id = '62221524f3b7441300da7a88'
+# brd_name = 'Agendas (Novo)'
+# crd: Card; fld_item: CustomFieldItem
 
-crd: Card; fld_item: CustomFieldItem
+# start = time.perf_counter()
 
-start = time.perf_counter()
+# app = App(key, token, api_interval=0.0)
+# app.get_boards()
 
-app = App(key, token, api_interval=0.0)
-app.get_boards()
+# brd = app['name': 'Agendas (Novo)']
 
-brd = app['Agendas (Novo)']
-brd.get_lists()
-brd.get_custom_fields()
+# brd.get_cards()
+# crd: Card = brd.cards[0]
+# crd.get_attachments()
+# print(crd.attachments)
+# brd.get_lists()
+# brd.get_custom_fields()
 
 
-for i in range(1, 10):
-    app.queue('cards', brd.lists[0].create_card, f'Card {i}', start_date='2022-01-01', due_date='2022-12-31', pos=f'{i}')
-app.execute('cards')
-print(0)
+# for i in range(1, 10):
+#     app.queue('cards', brd.lists[0].create_card, f'Card {i}', start_date=format_date('2022-01-01'), due_date=format_date('31/12/2022'), pos=f'{i}')
+# app.execute('cards')
+# print(0)
 
-for crd in brd.lists[0].cards:
-    app.queue('checklists', crd.create_checklist, crd['name'])
-app.execute('checklists')
-print(1)
+# for crd in brd.lists[0].cards:
+#     app.queue('checklists', crd.create_checklist, crd['name'])
+# app.execute('checklists')
+# print(1)
 
-clst: Checklist
-checkitem_lst = ['abc', 'def']
-for crd in brd.lists[0].cards:
-    for clst in crd.checklists:
-        for txt in checkitem_lst:
-            app.queue('checkitems', clst.create_checkitem, txt, 'bottom')
-app.execute('checkitems')
-print(2)
+# clst: Checklist
+# checkitem_lst = ['abc', 'def']
+# for crd in brd.lists[0].cards:
+#     for clst in crd.checklists:
+#         for txt in checkitem_lst:
+#             app.queue('checkitems', clst.create_checkitem, txt, 'bottom')
+# app.execute('checkitems')
+# print(2)
 
-citem: Checkitem
-for crd in brd.lists[0].cards:
-    for clst in crd.checklists:
-        for citem in clst.checkitems:
-            app.queue('tick', citem.update_self, crd.id, params={'state': 'complete'})
-app.execute('tick')
-print(3)
-print(brd.custom_fields)
-for crd in brd.lists[0].cards:
-    crd.build_custom_field_items(brd)
-    fld_item = crd.custom_field_items[-1]
-    app.queue('custom_field_items', fld_item.update_self, number='5')
-app.execute('custom_field_items')
-print(4)
+# citem: Checkitem
+# for crd in brd.lists[0].cards:
+#     for clst in crd.checklists:
+#         for citem in clst.checkitems:
+#             app.queue('tick', citem.update_self, crd.id, params={'state': 'complete'})
+# app.execute('tick')
+# print(3)
+
+# for crd in brd.lists[0].cards:
+#     crd.build_custom_field_items(brd)
+#     fld_item = crd.custom_field_items[-1]
+#     app.queue('custom_field_items', fld_item.update_self, number='5')
+# app.execute('custom_field_items')
+# print(4)
 
 
 # print(brd['name', 'id'])
@@ -854,5 +918,5 @@ print(4)
 # print(brd.lists[{'name': ['PEDIDOS', 'ITENS EM ANDAMENTO']}, 'name'])
 # print(brd.lists[{'name': ['PEDIDOS', 'ITENS EM ANDAMENTO']}, 'name', 'id'])
 
-end = time.perf_counter()
-print(f'{end-start:.4f} seconds')
+# end = time.perf_counter()
+# print(f'{end-start:.4f} seconds')
